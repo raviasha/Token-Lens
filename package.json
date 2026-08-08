@@ -1,0 +1,121 @@
+{
+  "name": "code-buddy",
+  "displayName": "Code Buddy",
+  "description": "Capture GitHub Copilot agent sessions and provide structured local coding feedback.",
+  "version": "0.6.2",
+  "publisher": "code-buddy",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/raviasha/Code_Buddy"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:tokenLens.installHooks",
+    "onCommand:tokenLens.removeHooks",
+    "onCommand:tokenLens.openLog",
+    "onCommand:tokenLens.openCodeBuddy",
+    "onCommand:tokenLens.openAnalytics",
+    "onCommand:tokenLens.openHookConfig",
+    "workspaceContains:.github/hooks/token-lens.json"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tokenLens.installHooks",
+        "title": "Code Buddy: Install Copilot Hooks"
+      },
+      {
+        "command": "tokenLens.removeHooks",
+        "title": "Code Buddy: Remove Copilot Hooks"
+      },
+      {
+        "command": "tokenLens.openLog",
+        "title": "Code Buddy: Open Session Log"
+      },
+      {
+        "command": "tokenLens.openCodeBuddy",
+        "title": "Code Buddy: Open Feedback"
+      },
+      {
+        "command": "tokenLens.openAnalytics",
+        "title": "Code Buddy: Open Analytics"
+      },
+      {
+        "command": "tokenLens.openHookConfig",
+        "title": "Code Buddy: Open Hook Configuration"
+      }
+    ],
+    "configuration": {
+      "title": "Code Buddy",
+      "properties": {
+        "tokenLens.logFile": {
+          "type": "string",
+          "default": ".code-buddy/copilot-session.jsonl",
+          "description": "Local JSONL path for Copilot session records. Relative paths are resolved from the workspace folder containing the active editor."
+        },
+        "tokenLens.redactSensitiveData": {
+          "type": "boolean",
+          "default": true,
+          "description": "Redact common secrets and sensitive-looking fields before writing records."
+        },
+        "tokenLens.captureTranscripts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Capture transcript file contents when a Copilot stop hook provides a transcript path."
+        },
+        "tokenLens.hookTimeoutSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Maximum time allowed for the Code Buddy Copilot hook command."
+        },
+        "tokenLens.feedbackFile": {
+          "type": "string",
+          "default": "Code Buddy.md",
+          "description": "Workspace Markdown file for concise per-turn Code Buddy feedback."
+        },
+        "tokenLens.analyticsFile": {
+          "type": "string",
+          "default": "Code Buddy Analytics.md",
+          "description": "Workspace Markdown file for detailed session analytics."
+        },
+        "tokenLens.trackWorktreeChanges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Compare the workspace before and after each Copilot turn to estimate changed files and lines."
+        },
+        "tokenLens.snapshotMaxFileSizeBytes": {
+          "type": "number",
+          "default": 1000000,
+          "minimum": 10000,
+          "maximum": 10000000,
+          "description": "Maximum text file size retained temporarily for exact per-turn line diffs."
+        },
+        "tokenLens.pythonCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Python command for Code Buddy analytics. Empty uses python3, then python."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.json",
+    "build": "npm run compile",
+    "test": "npm run build && node --test test/hook.test.js test/code_buddy.test.js",
+    "watch": "tsc -p tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.7.0"
+  }
+}
