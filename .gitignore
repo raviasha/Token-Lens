@@ -3,4 +3,5 @@ node_modules/
 dist/
 .token-lens/
 .code-buddy/
+.worktrees/
 *.vsix
