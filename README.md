@@ -5,11 +5,44 @@ Code Buddy is a VS Code extension that adds transparent, developer-controlled go
 It has four deliberately separate responsibilities:
 
 1. **Hook capture:** deterministically records the Copilot events that VS Code supplies.
-2. **Preflight enforcement:** allows investigation but prevents implementation until required prompt and task evaluations complete, fail safely, or the developer approves a controlled fallback.
-3. **Structured AI tools:** uses the selected VS Code language-model provider for prompt review, task decomposition, context measurement, and context curation.
+2. **Preflight enforcement:** allows investigation but prevents implementation until prompt quality, task scope, Estimated Context Pressure, and session-fit checks complete, fail safely, or the developer approves a controlled fallback.
+3. **Structured AI tools:** uses the selected VS Code language-model provider for prompt review, task decomposition, context measurement, session fit, and context curation.
 4. **Local governance:** detects high Estimated Context Pressure, a likely new task within a chat, or the first meaningful prompt in a new chat and offers an appropriate handoff.
 
 Code Buddy never silently replaces a prompt, automatically discards a conversation, or submits a new Copilot chat for the developer.
+
+## Shared project policy
+
+Add an optional, trackable `code-buddy.yaml` at the project root to apply the
+same policy to the VS Code extension and Codex plugin:
+
+```yaml
+version: 1
+healthCheck:
+  showOnEveryMeaningfulCodingTask: true
+thresholds:
+  promptQuality:
+    enhanceBelow: 75
+  taskScope:
+    decomposeAtOrAbove: 65
+  estimatedContextPressure:
+    capacityTokens: 40000
+    warningAt: 0.70
+    criticalAt: 0.85
+  sessionFit:
+    recommendFreshTaskAtOrAbove: 75
+    fallbackLexicalOverlapBelow: 0.20
+```
+
+Code Buddy starts every meaningful coding task with one compact health line:
+`prompt quality`, `task scope`, `estimated context pressure`, and `session
+fit`. Empty local context evidence is labeled **checked — limited evidence**;
+it is never presented as actual context use. Raise `enhanceBelow` for more
+prompt-enhancement suggestions; lower the other thresholds for stricter
+decomposition, pressure, or fresh-task recommendations. A fresh-task
+recommendation always offers **Curate for a fresh chat** or **Continue unchanged**—it never switches tasks automatically. Invalid YAML fields fall
+back independently, and VS Code’s existing `tokenLens.*` settings remain the
+fallback when YAML omits a value.
 
 ## Download
 
@@ -86,10 +119,10 @@ For a normal meaningful coding prompt, the expected sequence is:
 1. Copilot emits `UserPromptSubmit`.
 2. Code Buddy writes `user.prompt`, captures the initial worktree baseline, and starts prompt-specific preflight with `preflight.started`.
 3. The extension evaluates new-session and same-session task-boundary triggers from the latest meaningful prompt history and displays a choice only when warranted.
-4. Managed instructions ask the coding agent to invoke `code-buddy_reviewPrompt` and `code-buddy_decomposeTask` with the unchanged original request.
+4. Managed instructions ask the coding agent to invoke `code-buddy_reviewPrompt`, `code-buddy_decomposeTask`, `code-buddy_measureContext`, and `code-buddy_assessSessionFit` with the unchanged original request, then display the compact health line.
 5. Read, search, open, list, fetch, screenshot, question, and `tool_search` operations remain available during preflight.
 6. If the agent attempts an edit, terminal command, file creation, or another non-observational action too early, `PreToolUse` denies it and records `preflight.gate_denied`.
-7. Successful or safely failed Code Buddy evaluations write independent completion markers. Once both required markers exist, Code Buddy records `preflight.completed`.
+7. Successful or safely failed Code Buddy evaluations write independent completion markers. Once all four required markers exist, Code Buddy records `preflight.completed` and a factual `health.check_completed` or `health.check_limited` event.
 8. Copilot implementation continues normally.
 9. When Copilot emits `Stop`, Code Buddy captures available transcript events, compares the worktree, records `turn.outcome` and `context.load_snapshot`, and refreshes both Markdown reports.
 10. When live observation or the completed-turn snapshot crosses a context threshold, the extension verifies the measurement and offers context action only if the state remains warning or critical.
@@ -123,10 +156,12 @@ Preflight applies per meaningful prompt and per session.
 
 ### Required evaluations
 
-By default, both requirements must reach `completed` or safe `failed` status:
+By default, all four requirements must reach `completed` or safe `failed` status:
 
 - Prompt Reviewer: `code-buddy_reviewPrompt`
 - Task Decomposer: `code-buddy_decomposeTask`
+- Context Measurement: `code-buddy_measureContext`
+- Session Fit: `code-buddy_assessSessionFit`
 
 Independent marker files under `.code-buddy/.state/preflight/` prevent concurrent tool completion from overwriting the other requirement.
 

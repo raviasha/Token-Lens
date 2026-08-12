@@ -24,9 +24,38 @@ metadata.
 
 The native **Plugins → Code Buddy → Enable/Disable** switch is persistent for
 new tasks. When enabled and trusted, Code Buddy automatically performs its
-preflight for meaningful coding requests. A fresh task created from accepted
+four-check preflight and starts substantive work with a compact prompt quality,
+task scope, estimated context pressure, and session-fit health line. A fresh task created from accepted
 curated context waits until the marked handoff is pasted or the developer
 submits exactly `Code Buddy: continue without curated context`.
+
+## Shared project policy
+
+Place this optional `code-buddy.yaml` in the project root to configure both
+the Codex plugin and VS Code extension:
+
+```yaml
+version: 1
+healthCheck:
+  showOnEveryMeaningfulCodingTask: true
+thresholds:
+  promptQuality:
+    enhanceBelow: 75
+  taskScope:
+    decomposeAtOrAbove: 65
+  estimatedContextPressure:
+    capacityTokens: 40000
+    warningAt: 0.70
+    criticalAt: 0.85
+  sessionFit:
+    recommendFreshTaskAtOrAbove: 75
+    fallbackLexicalOverlapBelow: 0.20
+```
+
+Raise `enhanceBelow` for stricter prompt enhancement; lower the other
+thresholds for earlier decomposition, pressure, or fresh-task advice. Context
+without sufficient local evidence is shown as **checked — limited evidence**.
+A session-fit recommendation offers a curated fresh task or **Continue unchanged**; it never acts automatically.
 
 To update, download a newer repository version and run the two installation
 commands again from the new local path.

@@ -347,7 +347,7 @@
   "scripts": {
     "compile": "tsc -p tsconfig.json",
     "build": "npm run compile",
-    "test": "npm run build && node --test test/hook.test.js test/pending_handoff.test.js test/code_buddy.test.js test/rearchitecture.test.js test/project_policy.test.js test/governance.test.js",
+    "test": "npm run build && node --test test/hook.test.js test/pending_handoff.test.js test/code_buddy.test.js test/rearchitecture.test.js test/project_policy.test.js test/governance.test.js test/documentation.test.js",
     "watch": "tsc -p tsconfig.json --watch"
   },
   "devDependencies": {
