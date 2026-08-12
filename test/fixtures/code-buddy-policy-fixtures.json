@@ -1,0 +1,5 @@
+{
+  "validOverride": "version: 1\nthresholds:\n  promptQuality:\n    enhanceBelow: 90\n  estimatedContextPressure:\n    warningAt: 0.50\n",
+  "invalidRelationship": "version: 1\nthresholds:\n  estimatedContextPressure:\n    warningAt: 0.70\n    criticalAt: 0.40\n",
+  "unsupportedSyntax": "version: 1\nthresholds:\n  promptQuality:\n    enhanceBelow: [90]\n"
+}

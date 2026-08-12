@@ -8,8 +8,13 @@ import {
 } from './contracts';
 
 export const DEFAULT_POLICY: CodeBuddyPolicy = {
+  healthCheck: { showOnEveryMeaningfulCodingTask: true },
   promptReview: { enabled: true, interventionThreshold: 75 },
   taskDecomposition: { enabled: true, interventionThreshold: 65 },
+  sessionFit: {
+    recommendFreshTaskAtOrAbove: 75,
+    fallbackLexicalOverlapBelow: 0.20
+  },
   context: {
     estimatedContextCapacityTokens: 40_000,
     warningThreshold: 0.70,
@@ -48,6 +53,10 @@ export function promptInterventionRecommended(score: number, modelRecommendation
 
 export function decompositionRecommended(score: number, modelRecommendation: boolean, policy: CodeBuddyPolicy = DEFAULT_POLICY): boolean {
   return policy.taskDecomposition.enabled && (modelRecommendation || score >= policy.taskDecomposition.interventionThreshold);
+}
+
+export function shouldRecommendFreshTask(newTaskLikelihood: number, policy: CodeBuddyPolicy = DEFAULT_POLICY): boolean {
+  return newTaskLikelihood >= policy.sessionFit.recommendFreshTaskAtOrAbove;
 }
 
 export function estimateContext(

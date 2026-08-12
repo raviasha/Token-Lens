@@ -218,8 +218,13 @@ export interface ProviderCapabilities {
 }
 
 export interface CodeBuddyPolicy {
+  healthCheck: { showOnEveryMeaningfulCodingTask: boolean };
   promptReview: { enabled: boolean; interventionThreshold: number };
   taskDecomposition: { enabled: boolean; interventionThreshold: number };
+  sessionFit: {
+    recommendFreshTaskAtOrAbove: number;
+    fallbackLexicalOverlapBelow: number;
+  };
   context: {
     estimatedContextCapacityTokens: number;
     warningThreshold: number;
@@ -228,6 +233,17 @@ export interface CodeBuddyPolicy {
     offerCurationOnNewSession: boolean;
     offerCurationOnNewTask: boolean;
   };
+}
+
+export interface ProjectPolicyDiagnostic {
+  code: 'invalid_value' | 'unsupported_syntax' | 'unknown_key' | 'missing_file';
+  path: string;
+  message: string;
+}
+
+export interface ProjectPolicyLoad {
+  policy: CodeBuddyPolicy;
+  diagnostics: ProjectPolicyDiagnostic[];
 }
 
 export interface InterventionEvent {

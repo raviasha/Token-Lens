@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { CodeBuddyPolicy } from './core/contracts';
 import { clamp, DEFAULT_POLICY } from './core/policyEngine';
+import { loadProjectPolicy } from './core/projectPolicy';
 
 function finite(value: number, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
@@ -12,7 +13,8 @@ export function getCodeBuddyPolicy(scope?: vscode.ConfigurationScope): CodeBuddy
     configuration.get<number>('context.warningThreshold', DEFAULT_POLICY.context.warningThreshold),
     DEFAULT_POLICY.context.warningThreshold
   ), 0, 1);
-  return {
+  const legacyPolicy: CodeBuddyPolicy = {
+    healthCheck: { ...DEFAULT_POLICY.healthCheck },
     promptReview: {
       enabled: configuration.get<boolean>('promptReview.enabled', DEFAULT_POLICY.promptReview.enabled),
       interventionThreshold: clamp(
@@ -29,6 +31,7 @@ export function getCodeBuddyPolicy(scope?: vscode.ConfigurationScope): CodeBuddy
         100
       )
     },
+    sessionFit: { ...DEFAULT_POLICY.sessionFit },
     context: {
       estimatedContextCapacityTokens: Math.max(1_000, Math.round(finite(
         configuration.get<number>('context.estimatedContextCapacityTokens', DEFAULT_POLICY.context.estimatedContextCapacityTokens),
@@ -44,4 +47,8 @@ export function getCodeBuddyPolicy(scope?: vscode.ConfigurationScope): CodeBuddy
       offerCurationOnNewTask: configuration.get<boolean>('context.offerCurationOnNewTask', DEFAULT_POLICY.context.offerCurationOnNewTask)
     }
   };
+  const workspacePath = scope instanceof vscode.Uri
+    ? scope.fsPath
+    : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  return loadProjectPolicy(workspacePath, legacyPolicy).policy;
 }
