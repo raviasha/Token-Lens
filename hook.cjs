@@ -14,6 +14,34 @@ const secretPatterns = [
   /AKIA[0-9A-Z]{16}/g,
   /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g
 ];
+const contextEstimateCharactersPerToken = 4;
+const preflightStateSchemaVersion = 1;
+const promptReviewerToolNames = new Set([
+  'code-buddy_reviewprompt',
+  'codebuddypromptreviewer'
+]);
+const taskDecomposerToolNames = new Set([
+  'code-buddy_decomposetask',
+  'codebuddytaskdecomposer'
+]);
+const codeBuddyToolPattern = /^(?:code-buddy_|codebuddy)/i;
+const observationalToolPattern = /^(?:ask(?:_|-)?questions?|fetch|find|file_search|grep|grep_search|get|hover|list|open|read|resolve|search|screenshot|semantic_search|terminal_last_command|terminal_selection|tool_search)(?:$|_|-)/i;
+
+function envBoolean(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === '') {
+    return fallback;
+  }
+  return value !== 'false' && value !== '0';
+}
+
+function envInteger(name, fallback, minimum, maximum) {
+  const value = Number.parseInt(process.env[name] || '', 10);
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(maximum, Math.max(minimum, value));
+}
 
 function shouldRedact() {
   return process.env.TOKEN_LENS_REDACT_SENSITIVE !== 'false';
@@ -120,6 +148,164 @@ function getTurnId(payload) {
   return turnId === undefined || turnId === null ? null : String(turnId);
 }
 
+function textCharacterCount(value) {
+  if (value === undefined || value === null) {
+    return 0;
+  }
+  if (typeof value === 'string') {
+    return Array.from(value).length;
+  }
+  try {
+    return textCharacterCount(JSON.stringify(value));
+  } catch {
+    return 0;
+  }
+}
+
+function createContextMetrics(componentValues, options = {}) {
+  const components = Object.fromEntries(
+    Object.entries(componentValues)
+      .map(([name, value]) => [name, textCharacterCount(value)])
+      .filter(([, count]) => count > 0)
+  );
+  const observedChars = options.observedValue === undefined
+    ? Object.values(components).reduce((total, count) => total + count, 0)
+    : textCharacterCount(options.observedValue);
+  const modelFacingChars = options.modelFacingValue === undefined
+    ? observedChars
+    : textCharacterCount(options.modelFacingValue);
+
+  if (!observedChars && !modelFacingChars) {
+    return null;
+  }
+
+  return {
+    measurement: 'observed_text_estimate',
+    tokenEstimateMethod: 'characters_div_4',
+    role: options.role || 'unknown_text',
+    observedChars,
+    estimatedTokens: Math.ceil(observedChars / contextEstimateCharactersPerToken),
+    modelFacingChars,
+    modelFacingTokensEstimate: Math.ceil(modelFacingChars / contextEstimateCharactersPerToken),
+    components
+  };
+}
+
+function getUsageNumber(value, keys) {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function normalizeProviderUsage(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const usage = {};
+  const inputTokens = getUsageNumber(value, [
+    'inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens', 'promptTokenCount', 'prompt_token_count'
+  ]);
+  const outputTokens = getUsageNumber(value, [
+    'outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens', 'candidatesTokenCount', 'candidates_token_count'
+  ]);
+  const cachedInputTokens = getUsageNumber(value, [
+    'cachedInputTokens', 'cached_input_tokens', 'cacheReadInputTokens', 'cache_read_input_tokens', 'cachedTokens', 'cached_tokens'
+  ]);
+  const cacheWriteTokens = getUsageNumber(value, [
+    'cacheWriteTokens', 'cache_write_tokens', 'cacheCreationInputTokens', 'cache_creation_input_tokens'
+  ]);
+  const totalTokens = getUsageNumber(value, ['totalTokens', 'total_tokens', 'totalTokenCount', 'total_token_count']);
+  if (inputTokens !== undefined) usage.inputTokens = inputTokens;
+  if (outputTokens !== undefined) usage.outputTokens = outputTokens;
+  if (cachedInputTokens !== undefined) usage.cachedInputTokens = cachedInputTokens;
+  if (cacheWriteTokens !== undefined) usage.cacheWriteTokens = cacheWriteTokens;
+  if (totalTokens !== undefined) usage.totalTokens = totalTokens;
+  return Object.keys(usage).length ? usage : null;
+}
+
+function findProviderUsage(value, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 4) {
+    return null;
+  }
+  const directUsage = normalizeProviderUsage(value);
+  if (directUsage) {
+    return directUsage;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (!/(usage|token|metric)/i.test(key) || !child || typeof child !== 'object') {
+      continue;
+    }
+    const nestedUsage = findProviderUsage(child, depth + 1);
+    if (nestedUsage) {
+      return nestedUsage;
+    }
+  }
+  return null;
+}
+
+function hookContextMetrics(eventName, payload) {
+  const prompt = getValue(payload, 'prompt');
+  const transformedPrompt = getValue(payload, 'transformedPrompt', 'transformed_prompt');
+  const toolInput = getValue(payload, 'tool_input', 'toolArgs');
+  const toolResult = getValue(payload, 'tool_result', 'toolResult');
+  const error = getValue(payload, 'error');
+
+  switch (eventName) {
+    case 'SessionStart':
+    case 'sessionStart':
+      return createContextMetrics({ initialPrompt: getValue(payload, 'initial_prompt', 'initialPrompt') }, {
+        role: 'session_prompt',
+        modelFacingValue: getValue(payload, 'initial_prompt', 'initialPrompt')
+      });
+    case 'UserPromptSubmit':
+    case 'userPromptSubmitted':
+      return createContextMetrics({ prompt }, { role: 'user_prompt', modelFacingValue: prompt });
+    case 'UserPromptTransformed':
+    case 'userPromptTransformed':
+      return createContextMetrics({ prompt, transformedPrompt }, {
+        role: 'model_facing_prompt',
+        observedValue: transformedPrompt || prompt,
+        modelFacingValue: transformedPrompt || prompt
+      });
+    case 'PreToolUse':
+    case 'preToolUse':
+      return createContextMetrics({ toolInput }, { role: 'tool_request' });
+    case 'PostToolUse':
+    case 'postToolUse':
+      return createContextMetrics({ toolInput, toolResult }, {
+        role: 'tool_result',
+        modelFacingValue: toolResult
+      });
+    case 'PostToolUseFailure':
+    case 'postToolUseFailure':
+      return createContextMetrics({ toolInput, error }, { role: 'tool_error', modelFacingValue: error });
+    case 'SubagentStop':
+    case 'subagentStop':
+      return createContextMetrics({ response: getValue(payload, 'last_assistant_message', 'response') }, {
+        role: 'assistant_output',
+        modelFacingValue: getValue(payload, 'last_assistant_message', 'response')
+      });
+    case 'PreCompact':
+    case 'preCompact':
+      return createContextMetrics({ customInstructions: getValue(payload, 'custom_instructions', 'customInstructions') }, {
+        role: 'compaction_instruction',
+        modelFacingValue: getValue(payload, 'custom_instructions', 'customInstructions')
+      });
+    case 'ErrorOccurred':
+    case 'errorOccurred':
+      return createContextMetrics({ error }, { role: 'error', modelFacingValue: error });
+    default:
+      return null;
+  }
+}
+
 function createEventId(prefix, value) {
   const digest = crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 24);
   return `${prefix}_${digest}`;
@@ -128,6 +314,334 @@ function createEventId(prefix, value) {
 function appendRecord(logPath, record) {
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
   fs.appendFileSync(logPath, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
+}
+
+function normalizeToolName(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function isPromptReviewerTool(toolName) {
+  return promptReviewerToolNames.has(normalizeToolName(toolName));
+}
+
+function isTaskDecomposerTool(toolName) {
+  return taskDecomposerToolNames.has(normalizeToolName(toolName));
+}
+
+function isCodeBuddyTool(toolName) {
+  return codeBuddyToolPattern.test(normalizeToolName(toolName));
+}
+
+function isObservationalTool(toolName) {
+  const normalized = normalizeToolName(toolName);
+  if (!normalized) {
+    return false;
+  }
+  return observationalToolPattern.test(normalized)
+    || /(?:^|[_-])(?:fetch|find|get|grep|hover|list|open|read|resolve|search|screenshot)(?:$|[_-])/.test(normalized);
+}
+
+function isMeaningfulPrompt(prompt) {
+  if (typeof prompt !== 'string') {
+    return false;
+  }
+  const normalized = prompt.trim().toLowerCase();
+  if (!normalized
+    || /^(?:yes|no|continue|go ahead|run it|do it|ok|okay|cancel|stop|retry)[.!]?$/.test(normalized)
+    || /^code-buddy-action\b/.test(normalized)) {
+    return false;
+  }
+  return normalized.split(/\s+/).length >= 3 || normalized.length >= 20;
+}
+
+function preflightStateDirectory(logPath) {
+  const stateDirectory = process.env.TOKEN_LENS_STATE_DIR || path.join(path.dirname(logPath), '.state');
+  return path.join(stateDirectory, 'preflight');
+}
+
+function safeStatePart(value) {
+  return String(value || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function getPreflightStatePath(logPath, sessionId) {
+  return path.join(preflightStateDirectory(logPath), `${safeStatePart(sessionId)}.json`);
+}
+
+function getPreflightRequirementPath(logPath, state, requirement) {
+  return path.join(
+    preflightStateDirectory(logPath),
+    `${safeStatePart(state.sessionId)}.${safeStatePart(state.promptId)}.${safeStatePart(requirement)}.json`
+  );
+}
+
+function writeJsonAtomic(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporaryPath = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, JSON.stringify(value), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(temporaryPath, filePath);
+  } finally {
+    try {
+      fs.unlinkSync(temporaryPath);
+    } catch {
+      // The atomic rename normally removes the temporary path.
+    }
+  }
+}
+
+function readJsonIfPresent(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function savePreflightState(logPath, state) {
+  state.updatedAt = new Date().toISOString();
+  writeJsonAtomic(getPreflightStatePath(logPath, state.sessionId), state);
+}
+
+function loadPreflightState(logPath, sessionId) {
+  const state = readJsonIfPresent(getPreflightStatePath(logPath, sessionId));
+  if (!state || state.schemaVersion !== preflightStateSchemaVersion || state.sessionId !== (sessionId || 'unknown')) {
+    return null;
+  }
+  for (const requirement of ['promptReviewer', 'taskDecomposer']) {
+    const marker = readJsonIfPresent(getPreflightRequirementPath(logPath, state, requirement));
+    if (marker && marker.promptId === state.promptId && (marker.status === 'completed' || marker.status === 'failed')) {
+      state.requirements[requirement].status = marker.status;
+      state.requirements[requirement].toolName = marker.toolName || null;
+      state.requirements[requirement].toolUseId = marker.toolUseId || null;
+    }
+  }
+  return state;
+}
+
+function initializePreflightState(logPath, payload, sessionId, promptId) {
+  const prompt = getValue(payload, 'prompt');
+  const state = {
+    schemaVersion: preflightStateSchemaVersion,
+    sessionId: sessionId || 'unknown',
+    promptId,
+    promptHash: crypto.createHash('sha256').update(typeof prompt === 'string' ? prompt : '').digest('hex'),
+    promptLength: typeof prompt === 'string' ? Array.from(prompt).length : 0,
+    meaningful: isMeaningfulPrompt(prompt),
+    requirements: {
+      promptReviewer: {
+        required: envBoolean('TOKEN_LENS_PROMPT_REVIEW_ENABLED', true),
+        status: 'pending'
+      },
+      taskDecomposer: {
+        required: envBoolean('TOKEN_LENS_TASK_DECOMPOSITION_ENABLED', true),
+        status: 'pending'
+      }
+    },
+    denialCount: 0,
+    fallbackPendingToolUseId: null,
+    fallbackPendingToolName: null,
+    bypassed: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  savePreflightState(logPath, state);
+  return state;
+}
+
+function markPreflightRequirement(logPath, state, requirement, status, payload) {
+  const marker = {
+    schemaVersion: preflightStateSchemaVersion,
+    sessionId: state.sessionId,
+    promptId: state.promptId,
+    requirement,
+    status,
+    toolName: getValue(payload, 'tool_name', 'toolName') || null,
+    toolUseId: getValue(payload, 'tool_use_id', 'toolUseId') || null,
+    timestamp: getTimestamp(payload)
+  };
+  writeJsonAtomic(getPreflightRequirementPath(logPath, state, requirement), marker);
+  state.requirements[requirement].status = status;
+  state.requirements[requirement].toolName = marker.toolName;
+  state.requirements[requirement].toolUseId = marker.toolUseId;
+}
+
+function missingPreflightRequirements(state) {
+  return Object.entries(state.requirements)
+    .filter(([, value]) => value.required && value.status !== 'completed' && value.status !== 'failed')
+    .map(([name]) => name);
+}
+
+function appendPreflightRecord(logPath, payload, state, recordType, data = {}) {
+  const timestamp = getTimestamp(payload);
+  const recordData = redact({
+    promptId: state.promptId,
+    meaningful: state.meaningful,
+    requirements: state.requirements,
+    denialCount: state.denialCount,
+    bypassed: state.bypassed,
+    ...data
+  });
+  appendRecord(logPath, {
+    schemaVersion: 2,
+    eventId: createEventId('preflight', { recordType, sessionId: state.sessionId, timestamp, data: recordData }),
+    recordType,
+    source: 'governance',
+    sourceEventType: getEventName(payload),
+    sessionId: state.sessionId,
+    turnId: getTurnId(payload),
+    parentId: null,
+    timestamp,
+    localTimestamp: getLocalTimestamp(timestamp),
+    recordedAt: getLocalTimestamp(),
+    workspace: getWorkspace(payload),
+    model: getValue(payload, 'model') || null,
+    data: recordData
+  });
+
+  const interventionPath = process.env.TOKEN_LENS_INTERVENTION_LOG_FILE;
+  if (interventionPath) {
+    appendRecord(interventionPath, {
+      schemaVersion: 1,
+      eventId: createEventId('intervention', { recordType, sessionId: state.sessionId, timestamp, data: recordData }),
+      timestamp,
+      eventType: recordType,
+      sessionId: state.sessionId,
+      taskId: state.promptId,
+      data: recordData
+    });
+  }
+}
+
+function preflightToolLabel(requirement) {
+  return requirement === 'promptReviewer' ? 'code-buddy_reviewPrompt' : 'code-buddy_decomposeTask';
+}
+
+function preflightGateReason(toolName, missing) {
+  const tools = missing.map(preflightToolLabel);
+  return `Code Buddy blocked ${toolName || 'this implementation tool'} because required preflight is incomplete. `
+    + `Use tool_search to load ${tools.join(' and ')}, invoke ${tools.join(' and ')}, then retry the implementation tool. `
+    + 'Do not retry implementation before those evaluations finish.';
+}
+
+function handlePreflightEvent(logPath, payload, eventName, eventId) {
+  if (!envBoolean('TOKEN_LENS_PREFLIGHT_ENFORCE', true)) {
+    return null;
+  }
+
+  const sessionId = getSessionId(payload) || 'unknown';
+  if (eventName === 'UserPromptSubmit' || eventName === 'userPromptSubmitted') {
+    const state = initializePreflightState(logPath, payload, sessionId, eventId);
+    appendPreflightRecord(
+      logPath,
+      payload,
+      state,
+      state.meaningful ? 'preflight.started' : 'preflight.skipped',
+      state.meaningful ? {} : { reason: 'control_or_non_meaningful_prompt' }
+    );
+    return null;
+  }
+
+  const state = loadPreflightState(logPath, sessionId);
+  if (!state || !state.meaningful) {
+    return null;
+  }
+
+  const toolName = getValue(payload, 'tool_name', 'toolName');
+  const normalizedToolName = normalizeToolName(toolName);
+  const toolUseId = getValue(payload, 'tool_use_id', 'toolUseId');
+
+  if (eventName === 'PostToolUse' || eventName === 'postToolUse'
+    || eventName === 'PostToolUseFailure' || eventName === 'postToolUseFailure') {
+    const status = eventName === 'PostToolUseFailure' || eventName === 'postToolUseFailure' ? 'failed' : 'completed';
+    let requirement = null;
+    if (isPromptReviewerTool(normalizedToolName)) {
+      requirement = 'promptReviewer';
+    } else if (isTaskDecomposerTool(normalizedToolName)) {
+      requirement = 'taskDecomposer';
+    }
+
+    if (requirement) {
+      markPreflightRequirement(logPath, state, requirement, status, payload);
+      appendPreflightRecord(logPath, payload, state, status === 'failed' ? 'preflight.tool_failed' : 'preflight.tool_completed', {
+        invocationSource: 'language_model_tool',
+        requirement,
+        toolName,
+        toolUseId: toolUseId || null
+      });
+      if (!missingPreflightRequirements(state).length) {
+        appendPreflightRecord(logPath, payload, state, 'preflight.completed', {
+          completedWithFallback: Object.values(state.requirements).some((value) => value.status === 'failed')
+        });
+      }
+      return null;
+    }
+
+    const matchesFallback = state.fallbackPendingToolUseId
+      ? state.fallbackPendingToolUseId === toolUseId
+      : state.fallbackPendingToolName === normalizedToolName;
+    if (matchesFallback) {
+      state.bypassed = true;
+      state.fallbackPendingToolUseId = null;
+      state.fallbackPendingToolName = null;
+      savePreflightState(logPath, state);
+      appendPreflightRecord(logPath, payload, state, 'preflight.bypassed', {
+        reason: 'user_approved_controlled_fallback',
+        toolName,
+        toolUseId: toolUseId || null
+      });
+    }
+    return null;
+  }
+
+  if (eventName !== 'PreToolUse' && eventName !== 'preToolUse') {
+    return null;
+  }
+
+  const missing = missingPreflightRequirements(state);
+  if (!missing.length || state.bypassed || isCodeBuddyTool(normalizedToolName) || isObservationalTool(normalizedToolName)) {
+    return null;
+  }
+
+  const denialsBeforeFallback = envInteger('TOKEN_LENS_PREFLIGHT_DENIALS_BEFORE_FALLBACK', 1, 1, 5);
+  if (state.denialCount < denialsBeforeFallback) {
+    state.denialCount += 1;
+    savePreflightState(logPath, state);
+    const reason = preflightGateReason(toolName, missing);
+    appendPreflightRecord(logPath, payload, state, 'preflight.gate_denied', {
+      toolName,
+      toolUseId: toolUseId || null,
+      missing,
+      reason
+    });
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason,
+        additionalContext: reason
+      }
+    };
+  }
+
+  const fallbackReason = `Code Buddy preflight is still incomplete (${missing.map(preflightToolLabel).join(', ')}). `
+    + 'Approve only if you want to continue with the original task under the controlled fail-open path.';
+  state.fallbackPendingToolUseId = toolUseId || null;
+  state.fallbackPendingToolName = normalizedToolName;
+  savePreflightState(logPath, state);
+  appendPreflightRecord(logPath, payload, state, 'preflight.fallback_requested', {
+    toolName,
+    toolUseId: toolUseId || null,
+    missing,
+    reason: fallbackReason
+  });
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'ask',
+      permissionDecisionReason: fallbackReason,
+      additionalContext: fallbackReason
+    }
+  };
 }
 
 function normalizeHookType(eventName) {
@@ -249,6 +763,15 @@ function normalizeHookData(eventName, payload) {
 function appendHookRecord(logPath, payload, eventName, sessionId) {
   const workspace = getWorkspace(payload);
   const eventId = createEventId('hook', { eventName, payload });
+  const data = normalizeHookData(eventName, payload);
+  const context = hookContextMetrics(eventName, payload);
+  const providerUsage = findProviderUsage(payload);
+  if (context) {
+    data.context = context;
+  }
+  if (providerUsage) {
+    data.providerUsage = providerUsage;
+  }
   appendRecord(logPath, {
     schemaVersion: 2,
     eventId,
@@ -263,7 +786,7 @@ function appendHookRecord(logPath, payload, eventName, sessionId) {
     recordedAt: getLocalTimestamp(),
     workspace,
     model: getValue(payload, 'model') || null,
-    data: normalizeHookData(eventName, payload),
+    data,
     rawPayload: redact(payload)
   });
   return eventId;
@@ -283,6 +806,31 @@ function normalizeTranscriptType(eventType) {
     'assistant.turn_end': 'turn.ended'
   };
   return types[eventType] || 'transcript.event';
+}
+
+function transcriptContextMetrics(eventType, eventData) {
+  if (!eventData || typeof eventData !== 'object') {
+    return null;
+  }
+  const fieldNames = ['content', 'prompt', 'transformedPrompt', 'result', 'text', 'output', 'error', 'summary', 'details', 'toolRequests', 'attachments'];
+  const components = {};
+  for (const fieldName of fieldNames) {
+    if (eventData[fieldName] !== undefined && eventData[fieldName] !== null) {
+      components[fieldName] = eventData[fieldName];
+    }
+  }
+  if (!Object.keys(components).length) {
+    return null;
+  }
+  const role = eventType === 'user.message'
+    ? 'user_prompt'
+    : eventType === 'assistant.message'
+      ? 'assistant_output'
+      : /tool|result/i.test(eventType)
+        ? 'tool_result'
+        : 'transcript_text';
+  const modelFacingValue = eventData.content ?? eventData.result ?? eventData.text ?? eventData.output ?? eventData.error;
+  return createContextMetrics(components, { role, modelFacingValue });
 }
 
 function getTranscriptStatePath(logPath, sessionId) {
@@ -319,6 +867,19 @@ function appendTranscriptRecord(logPath, payload, sessionId, transcriptPath, tra
     ? (eventData.turnId ?? eventData.turn_id ?? null)
     : null;
 
+  const redactedData = redact(eventData);
+  const data = redactedData && typeof redactedData === 'object' && !Array.isArray(redactedData)
+    ? { ...redactedData }
+    : { value: redactedData };
+  const context = transcriptContextMetrics(eventType, eventData);
+  const providerUsage = findProviderUsage(transcriptEvent);
+  if (context) {
+    data.context = context;
+  }
+  if (providerUsage) {
+    data.providerUsage = providerUsage;
+  }
+
   appendRecord(logPath, {
     schemaVersion: 2,
     eventId: `transcript_${sessionId || 'unknown'}_${sourceEventId}`,
@@ -335,7 +896,7 @@ function appendTranscriptRecord(logPath, payload, sessionId, transcriptPath, tra
     workspace: getWorkspace(payload),
     model: getValue(payload, 'model') || null,
     transcriptPath,
-    data: redact(eventData),
+    data,
     rawPayload: redact(transcriptEvent)
   });
 }
@@ -494,6 +1055,7 @@ function main(input) {
   }
 
   const eventId = appendHookRecord(logPath, payload, event, sessionId);
+  const hookOutput = handlePreflightEvent(logPath, payload, event, eventId);
 
   if (event === 'UserPromptSubmit' || event === 'userPromptSubmitted') {
     runCodeBuddy('start_turn', payload, sessionId, eventId);
@@ -503,6 +1065,8 @@ function main(input) {
     captureTranscript(logPath, payload, event, sessionId);
     runCodeBuddy('end_turn', payload, sessionId, eventId);
   }
+
+  return hookOutput;
 }
 
 let input = '';
@@ -512,7 +1076,10 @@ process.stdin.on('data', (chunk) => {
 });
 process.stdin.on('end', () => {
   try {
-    main(input);
+    const output = main(input);
+    if (output) {
+      process.stdout.write(JSON.stringify(output));
+    }
   } catch (error) {
     process.stderr.write(`Code Buddy hook error: ${error instanceof Error ? error.message : String(error)}\n`);
   }

@@ -28,7 +28,8 @@ function runHook(payload, environment = {}, existingDirectory = null) {
     .split('\n')
     .filter(Boolean)
     .map((line) => JSON.parse(line));
-  return { directory, records };
+  const output = result.stdout.trim() ? JSON.parse(result.stdout) : null;
+  return { directory, records, output };
 }
 
 test('writes structured events and redacts sensitive fields', () => {
@@ -40,15 +41,221 @@ test('writes structured events and redacts sensitive fields', () => {
     prompt: 'Use apiKey=do-not-log and bearer abc123 to fix this'
   });
 
-  assert.equal(records.length, 1);
-  assert.equal(records[0].schemaVersion, 2);
-  assert.equal(records[0].recordType, 'user.prompt');
-  assert.equal(records[0].sourceEventType, 'UserPromptSubmit');
-  assert.equal(records[0].sessionId, 'session-1');
-  assert.match(records[0].localTimestamp, /[+-]\d{2}:\d{2}$/);
-  assert.match(records[0].recordedAt, /[+-]\d{2}:\d{2}$/);
-  assert.match(records[0].data.prompt, /\[REDACTED\]/);
-  assert.doesNotMatch(records[0].data.prompt, /do-not-log/);
+  const promptRecord = records.find((record) => record.recordType === 'user.prompt');
+  assert.ok(promptRecord);
+  assert.equal(promptRecord.schemaVersion, 2);
+  assert.equal(promptRecord.sourceEventType, 'UserPromptSubmit');
+  assert.equal(promptRecord.sessionId, 'session-1');
+  assert.match(promptRecord.localTimestamp, /[+-]\d{2}:\d{2}$/);
+  assert.match(promptRecord.recordedAt, /[+-]\d{2}:\d{2}$/);
+  assert.match(promptRecord.data.prompt, /\[REDACTED\]/);
+  assert.doesNotMatch(promptRecord.data.prompt, /do-not-log/);
+  assert.equal(promptRecord.data.context.measurement, 'observed_text_estimate');
+  assert.equal(promptRecord.data.context.role, 'user_prompt');
+  assert.equal(promptRecord.data.context.estimatedTokens, Math.ceil(promptRecord.data.context.observedChars / 4));
+  assert.ok(records.some((record) => record.recordType === 'preflight.started'));
+});
+
+test('preflight gate redirects implementation until both semantic tools complete', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-preflight-'));
+  const environment = {
+    TOKEN_LENS_PREFLIGHT_ENFORCE: 'true',
+    TOKEN_LENS_PREFLIGHT_DENIALS_BEFORE_FALLBACK: '1',
+    TOKEN_LENS_INTERVENTION_LOG_FILE: path.join(directory, 'interventions.jsonl')
+  };
+
+  runHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'preflight-session',
+    timestamp: '2026-08-08T00:00:00.000Z',
+    cwd: directory,
+    prompt: 'Implement input validation and add automated tests.'
+  }, environment, directory);
+
+  const observational = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'preflight-session',
+    tool_name: 'read_file',
+    tool_use_id: 'read-1',
+    tool_input: { filePath: 'src/input.ts' }
+  }, environment, directory);
+  assert.equal(observational.output, null);
+
+  const blocked = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'preflight-session',
+    tool_name: 'replace_string_in_file',
+    tool_use_id: 'edit-1',
+    tool_input: { filePath: 'src/input.ts' }
+  }, environment, directory);
+  assert.equal(blocked.output.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(blocked.output.hookSpecificOutput.permissionDecisionReason, /code-buddy_reviewPrompt/);
+  assert.match(blocked.output.hookSpecificOutput.permissionDecisionReason, /code-buddy_decomposeTask/);
+
+  const reviewerStart = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'preflight-session',
+    tool_name: 'code-buddy_reviewPrompt',
+    tool_use_id: 'review-1',
+    tool_input: { prompt: 'Implement input validation and add automated tests.' }
+  }, environment, directory);
+  assert.equal(reviewerStart.output, null);
+  runHook({
+    hook_event_name: 'PostToolUse',
+    session_id: 'preflight-session',
+    tool_name: 'code-buddy_reviewPrompt',
+    tool_use_id: 'review-1',
+    tool_result: { status: 'ok' }
+  }, environment, directory);
+
+  runHook({
+    hook_event_name: 'PostToolUse',
+    session_id: 'preflight-session',
+    tool_name: 'code-buddy_decomposeTask',
+    tool_use_id: 'decompose-1',
+    tool_result: { status: 'ok' }
+  }, environment, directory);
+
+  const allowed = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'preflight-session',
+    tool_name: 'replace_string_in_file',
+    tool_use_id: 'edit-2',
+    tool_input: { filePath: 'src/input.ts' }
+  }, environment, directory);
+  assert.equal(allowed.output, null);
+  assert.ok(allowed.records.some((record) => record.recordType === 'preflight.completed'));
+
+  const interventions = fs.readFileSync(environment.TOKEN_LENS_INTERVENTION_LOG_FILE, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.ok(interventions.some((record) => record.eventType === 'preflight.gate_denied'));
+  assert.ok(interventions.some((record) => record.eventType === 'preflight.tool_completed'
+    && record.data.invocationSource === 'language_model_tool'));
+});
+
+test('preflight gate offers an explicit controlled fallback instead of permanently blocking', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-fallback-'));
+  const environment = {
+    TOKEN_LENS_PREFLIGHT_ENFORCE: 'true',
+    TOKEN_LENS_PREFLIGHT_DENIALS_BEFORE_FALLBACK: '1'
+  };
+
+  runHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'fallback-session',
+    prompt: 'Implement the requested migration across the service.'
+  }, environment, directory);
+  const denied = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'fallback-session',
+    tool_name: 'run_in_terminal',
+    tool_use_id: 'terminal-1'
+  }, environment, directory);
+  assert.equal(denied.output.hookSpecificOutput.permissionDecision, 'deny');
+
+  const fallback = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'fallback-session',
+    tool_name: 'run_in_terminal',
+    tool_use_id: 'terminal-2'
+  }, environment, directory);
+  assert.equal(fallback.output.hookSpecificOutput.permissionDecision, 'ask');
+  assert.match(fallback.output.hookSpecificOutput.permissionDecisionReason, /controlled fail-open/);
+
+  runHook({
+    hook_event_name: 'PostToolUse',
+    session_id: 'fallback-session',
+    tool_name: 'run_in_terminal',
+    tool_use_id: 'terminal-2',
+    tool_result: { status: 'ok' }
+  }, environment, directory);
+  const allowedAfterApproval = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'fallback-session',
+    tool_name: 'create_file',
+    tool_use_id: 'create-1'
+  }, environment, directory);
+  assert.equal(allowedAfterApproval.output, null);
+  assert.ok(allowedAfterApproval.records.some((record) => record.recordType === 'preflight.bypassed'));
+});
+
+test('semantic tool failures satisfy preflight through the safe fallback contract', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-tool-failure-'));
+  const environment = { TOKEN_LENS_PREFLIGHT_ENFORCE: 'true' };
+  runHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'failure-session',
+    prompt: 'Refactor the provider implementation and update its tests.'
+  }, environment, directory);
+  runHook({
+    hook_event_name: 'PostToolUseFailure',
+    session_id: 'failure-session',
+    tool_name: 'code-buddy_reviewPrompt',
+    tool_use_id: 'review-failed',
+    error: 'Model unavailable'
+  }, environment, directory);
+  runHook({
+    hook_event_name: 'PostToolUse',
+    session_id: 'failure-session',
+    tool_name: 'code-buddy_decomposeTask',
+    tool_use_id: 'decompose-ok',
+    tool_result: { status: 'fallback' }
+  }, environment, directory);
+  const allowed = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'failure-session',
+    tool_name: 'create_file',
+    tool_use_id: 'create-after-failure'
+  }, environment, directory);
+  assert.equal(allowed.output, null);
+  const completion = allowed.records.findLast((record) => record.recordType === 'preflight.completed');
+  assert.ok(completion);
+  assert.equal(completion.data.completedWithFallback, true);
+});
+
+test('control replies bypass semantic preflight enforcement', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-control-'));
+  runHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'control-session',
+    prompt: 'continue'
+  }, {}, directory);
+  const allowed = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'control-session',
+    tool_name: 'run_in_terminal',
+    tool_use_id: 'control-terminal'
+  }, {}, directory);
+  assert.equal(allowed.output, null);
+  assert.ok(allowed.records.some((record) => record.recordType === 'preflight.skipped'));
+});
+
+test('captures transformed prompt context and provider usage when supplied', () => {
+  const { records } = runHook({
+    hook_event_name: 'UserPromptTransformed',
+    session_id: 'session-usage',
+    timestamp: '2026-08-08T00:00:00.000Z',
+    cwd: '/workspace/project',
+    prompt: 'Fix the bug',
+    transformedPrompt: 'Fix the bug in the selected authentication module.',
+    usage: {
+      input_tokens: 1200,
+      cached_input_tokens: 800,
+      output_tokens: 300,
+      total_tokens: 2300
+    }
+  });
+
+  assert.equal(records[0].data.context.role, 'model_facing_prompt');
+  assert.equal(records[0].data.context.observedChars, records[0].data.transformedPrompt.length);
+  assert.deepEqual(records[0].data.providerUsage, {
+    inputTokens: 1200,
+    cachedInputTokens: 800,
+    outputTokens: 300,
+    totalTokens: 2300
+  });
 });
 
 test('captures a transcript snapshot on stop', () => {

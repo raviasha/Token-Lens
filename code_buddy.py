@@ -28,6 +28,8 @@ DEFAULT_IGNORED_DIRECTORIES = {
     ".cache",
 }
 REPORT_NAMES = {"Code Buddy.md", "Code Buddy Analytics.md"}
+CONTEXT_ESTIMATE_CHARACTERS_PER_TOKEN = 4
+CONTEXT_ESTIMATOR_VERSION = "code_buddy_context_estimator_v2"
 ACTION_WORDS = {
     "add",
     "build",
@@ -75,6 +77,13 @@ def env_bool(name, default=True):
 def env_int(name, default):
     try:
         return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def env_float(name, default):
+    try:
+        return float(os.environ.get(name, default))
     except (TypeError, ValueError):
         return default
 
@@ -146,6 +155,25 @@ def load_records(log_path):
         if isinstance(record, dict) and record.get("schemaVersion") == 2:
             records.append(record)
     return sorted(records, key=timestamp_key)
+
+
+def load_intervention_records():
+    intervention_path = Path(os.environ.get("TOKEN_LENS_INTERVENTION_LOG_FILE", ""))
+    if not intervention_path or not intervention_path.exists():
+        return []
+    records = []
+    try:
+        lines = intervention_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(record, dict) and record.get("schemaVersion") == 1:
+            records.append(record)
+    return records
 
 
 def is_probably_text(sample):
@@ -250,6 +278,8 @@ def save_snapshot(state_dir, session_id, prompt_event_id, workspace, snapshot):
     state = {
         "sessionId": session_id,
         "promptEventId": prompt_event_id,
+        "promptEventIds": [prompt_event_id] if prompt_event_id else [],
+        "lastPromptEventId": prompt_event_id,
         "workspace": str(workspace),
         "snapshot": snapshot,
     }
@@ -348,7 +378,7 @@ def hash_value(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:24]
 
 
-def append_outcome(log_path, session_id, workspace, prompt_event_id, event_id, metrics, available):
+def append_outcome(log_path, session_id, workspace, prompt_event_id, prompt_event_ids, event_id, metrics, available):
     record = {
         "schemaVersion": 2,
         "eventId": "analytics_" + hash_value({"sessionId": session_id, "promptEventId": prompt_event_id, "eventId": event_id, "metrics": metrics}),
@@ -364,6 +394,8 @@ def append_outcome(log_path, session_id, workspace, prompt_event_id, event_id, m
         "workspace": str(workspace),
         "data": {
             "promptEventId": prompt_event_id,
+            "promptEventIds": prompt_event_ids,
+            "lastPromptEventId": prompt_event_ids[-1] if prompt_event_ids else None,
             "worktreeTrackingAvailable": available,
             "attribution": "observed_worktree_delta",
             "metrics": metrics,
@@ -380,10 +412,206 @@ def text_from_record(record):
     if record_type == "prompt.transformed" and isinstance(data, dict):
         return str(data.get("transformedPrompt") or data.get("prompt") or "")
     if record_type == "assistant.message" and isinstance(data, dict):
-        return str(data.get("content") or "")
-    if record_type in {"tool.completed", "tool.failed", "error.occurred"}:
+        return json.dumps({"content": data.get("content"), "toolRequests": data.get("toolRequests")}, ensure_ascii=False)
+    if record_type in {"tool.started", "tool.completed", "tool.failed", "error.occurred"}:
         return json.dumps(data, ensure_ascii=False) if data is not None else ""
+    if record_type == "transcript.event" and isinstance(data, dict):
+        values = {
+            key: data.get(key)
+            for key in ("content", "prompt", "result", "text", "output", "error", "toolRequests", "attachments")
+            if data.get(key) is not None
+        }
+        return json.dumps(values, ensure_ascii=False)
     return ""
+
+
+def text_character_count(value):
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+    except (TypeError, ValueError):
+        return 0
+
+
+def provider_usage(record):
+    data = record.get("data")
+    usage = data.get("providerUsage") if isinstance(data, dict) else None
+    if not isinstance(usage, dict):
+        return {}
+    fields = ("inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens", "totalTokens")
+    return {field: usage[field] for field in fields if isinstance(usage.get(field), (int, float))}
+
+
+def record_context(record):
+    data = record.get("data")
+    context = data.get("context") if isinstance(data, dict) else None
+    if isinstance(context, dict) and isinstance(context.get("observedChars"), (int, float)):
+        components = context.get("components") if isinstance(context.get("components"), dict) else {}
+        return {
+            "observedChars": max(0, int(context.get("observedChars", 0))),
+            "modelFacingChars": max(0, int(context.get("modelFacingChars", context.get("observedChars", 0)))),
+            "components": {
+                str(key): max(0, int(value))
+                for key, value in components.items()
+                if isinstance(value, (int, float))
+            },
+            "measurement": str(context.get("measurement") or "observed_text_estimate"),
+        }
+
+    text = text_from_record(record)
+    if not text:
+        return {"observedChars": 0, "modelFacingChars": 0, "components": {}, "measurement": "unavailable"}
+    record_type = record.get("recordType") or "unknown"
+    component = {
+        "user.prompt": "prompt",
+        "prompt.transformed": "transformedPrompt",
+        "assistant.message": "assistant",
+        "tool.started": "toolInput",
+        "tool.completed": "toolResult",
+        "tool.failed": "toolError",
+        "error.occurred": "error",
+    }.get(record_type, "transcript")
+    characters = text_character_count(text)
+    return {
+        "observedChars": characters,
+        "modelFacingChars": characters,
+        "components": {component: characters},
+        "measurement": "observed_text_estimate",
+    }
+
+
+def observed_context(records):
+    observed_chars = 0
+    model_facing_chars = 0
+    components = {}
+    reported_usage = {}
+    has_provider_usage = False
+    for record in records:
+        record_type = record.get("recordType")
+        if record_type in {"transcript.snapshot", "turn.outcome", "context.load_snapshot"}:
+            continue
+        context = record_context(record)
+        observed_chars += context["observedChars"]
+        model_facing_chars += context["modelFacingChars"]
+        for key, value in context["components"].items():
+            components[key] = components.get(key, 0) + value
+        usage = provider_usage(record)
+        if usage:
+            has_provider_usage = True
+            for key, value in usage.items():
+                reported_usage[key] = reported_usage.get(key, 0) + value
+
+    return {
+        "measurement": "provider_reported" if has_provider_usage else "observed_text_estimate",
+        "tokenEstimateMethod": "provider_usage_or_characters_div_4",
+        "observedChars": observed_chars,
+        "estimatedTokens": math.ceil(observed_chars / CONTEXT_ESTIMATE_CHARACTERS_PER_TOKEN) if observed_chars else 0,
+        "modelFacingChars": model_facing_chars,
+        "modelFacingTokensEstimate": math.ceil(model_facing_chars / CONTEXT_ESTIMATE_CHARACTERS_PER_TOKEN) if model_facing_chars else 0,
+        "components": components,
+        "providerUsage": reported_usage,
+    }
+
+
+def prompt_effective_characters(records):
+    prompt_records = [record for record in records if record.get("recordType") in {"user.prompt", "prompt.transformed"}]
+    transformed = [record for record in prompt_records if record.get("recordType") == "prompt.transformed"]
+    selected = transformed[-1:] if transformed else [record for record in prompt_records if record.get("recordType") == "user.prompt"]
+    return sum(record_context(record)["observedChars"] for record in selected)
+
+
+def context_warning(exposure_tokens, previous_exposures):
+    capacity = max(1_000, env_int("TOKEN_LENS_CONTEXT_CAPACITY_TOKENS", 40_000))
+    warning_threshold = min(1.0, max(0.0, env_float("TOKEN_LENS_CONTEXT_WARNING_THRESHOLD", 0.70)))
+    critical_threshold = min(1.0, max(warning_threshold, env_float("TOKEN_LENS_CONTEXT_CRITICAL_THRESHOLD", 0.85)))
+    utilization = exposure_tokens / capacity
+    baseline = None
+    ratio = None
+    if previous_exposures:
+        baseline = int(round(sorted(previous_exposures)[len(previous_exposures) // 2]))
+        if baseline > 0:
+            ratio = exposure_tokens / baseline
+    if utilization >= critical_threshold or (ratio is not None and ratio >= 2):
+        level = "high"
+    elif utilization >= warning_threshold or (ratio is not None and ratio >= 1.5):
+        level = "medium"
+    else:
+        level = "normal"
+    return {
+        "level": level,
+        "thresholdState": "critical" if level == "high" else "warning" if level == "medium" else "normal",
+        "baselineTokens": baseline,
+        "ratio": round(ratio, 2) if ratio is not None else None,
+        "utilization": round(utilization, 4),
+        "capacityTokens": capacity,
+        "warningThreshold": warning_threshold,
+        "criticalThreshold": critical_threshold,
+    }
+
+
+def context_turns(records):
+    prompt_positions = [index for index, record in enumerate(records) if record.get("recordType") == "user.prompt"]
+    if not prompt_positions:
+        return []
+    prior_visible_chars = observed_context(records[:prompt_positions[0]])["observedChars"]
+    previous_exposures = []
+    turns = []
+    for prompt_number, prompt_index in enumerate(prompt_positions, 1):
+        next_prompt_index = prompt_positions[prompt_number] if prompt_number < len(prompt_positions) else len(records)
+        segment = records[prompt_index:next_prompt_index]
+        raw_segment_chars = observed_context(segment)["observedChars"]
+        raw_prompt_chars = sum(
+            record_context(record)["observedChars"]
+            for record in segment
+            if record.get("recordType") in {"user.prompt", "prompt.transformed"}
+        )
+        effective_prompt_chars = prompt_effective_characters(segment)
+        non_prompt_chars = max(0, raw_segment_chars - raw_prompt_chars)
+        turn_observed_chars = non_prompt_chars + effective_prompt_chars
+        model_interactions_estimate = max(
+            1,
+            1 + sum(record.get("recordType") in {"tool.completed", "tool.failed"} for record in segment)
+        )
+        repeated_prior_context_chars = prior_visible_chars * model_interactions_estimate
+        exposure_chars = repeated_prior_context_chars + effective_prompt_chars + non_prompt_chars
+        exposure_tokens = math.ceil(exposure_chars / CONTEXT_ESTIMATE_CHARACTERS_PER_TOKEN) if exposure_chars else 0
+        segment_context = observed_context(segment)
+        usage = segment_context["providerUsage"]
+        warning = context_warning(exposure_tokens, previous_exposures)
+        turns.append({
+            "promptNumber": prompt_number,
+            "promptEventId": records[prompt_index].get("eventId"),
+            "timestamp": records[prompt_index].get("localTimestamp") or records[prompt_index].get("timestamp"),
+            "promptChars": effective_prompt_chars,
+            "promptTokensEstimate": math.ceil(effective_prompt_chars / CONTEXT_ESTIMATE_CHARACTERS_PER_TOKEN) if effective_prompt_chars else 0,
+            "priorSessionChars": prior_visible_chars,
+            "priorSessionTokensEstimate": math.ceil(prior_visible_chars / CONTEXT_ESTIMATE_CHARACTERS_PER_TOKEN) if prior_visible_chars else 0,
+            "turnObservedChars": turn_observed_chars,
+            "turnObservedTokensEstimate": math.ceil(turn_observed_chars / CONTEXT_ESTIMATE_CHARACTERS_PER_TOKEN) if turn_observed_chars else 0,
+            "contextExposureChars": exposure_chars,
+            "contextExposureTokensEstimate": exposure_tokens,
+            "modelInteractionsEstimate": model_interactions_estimate,
+            "repeatedPriorContextChars": repeated_prior_context_chars,
+            "repeatedPriorContextTokensEstimate": math.ceil(repeated_prior_context_chars / CONTEXT_ESTIMATE_CHARACTERS_PER_TOKEN) if repeated_prior_context_chars else 0,
+            "measurement": segment_context["measurement"],
+            "providerUsage": usage,
+            "warning": warning,
+        })
+        previous_exposures.append(exposure_tokens)
+        prior_visible_chars += turn_observed_chars
+    return turns
+
+
+def latest_context_turn(records, prompt_event_id=None):
+    turns = context_turns(records)
+    if prompt_event_id:
+        matching = [turn for turn in turns if turn.get("promptEventId") == prompt_event_id]
+        if matching:
+            return matching[-1]
+    return turns[-1] if turns else None
 
 
 def prompt_quality(prompt):
@@ -461,6 +689,13 @@ def format_duration(records):
     return f"{seconds}s"
 
 
+def duration_seconds(records):
+    if len(records) < 2:
+        return 0
+    duration = (timestamp_key(records[-1]) - timestamp_key(records[0])).total_seconds()
+    return max(0, int(duration))
+
+
 def session_records(records, session_id):
     if session_id:
         selected = [record for record in records if record.get("sessionId") == session_id]
@@ -473,7 +708,11 @@ def session_records(records, session_id):
 def latest_outcome(records, prompt_event_id=None):
     outcomes = [record for record in records if record.get("recordType") == "turn.outcome"]
     if prompt_event_id:
-        matching = [record for record in outcomes if (record.get("data") or {}).get("promptEventId") == prompt_event_id]
+        matching = [
+            record for record in outcomes
+            if (record.get("data") or {}).get("promptEventId") == prompt_event_id
+            or prompt_event_id in ((record.get("data") or {}).get("promptEventIds") or [])
+        ]
         if matching:
             return matching[-1]
     return outcomes[-1] if outcomes else None
@@ -486,23 +725,22 @@ def latest_prompt(records):
 
 def session_metrics(records):
     counts = {}
-    observed_chars = 0
-    prompt_chars = 0
-    assistant_chars = 0
     for record in records:
         record_type = record.get("recordType", "unknown")
         counts[record_type] = counts.get(record_type, 0) + 1
-        text = text_from_record(record)
-        observed_chars += len(text)
-        if record_type == "user.prompt":
-            prompt_chars += len(text)
-        if record_type == "assistant.message":
-            assistant_chars += len(text)
     outcomes = [record for record in records if record.get("recordType") == "turn.outcome"]
     outcome_data = [(record.get("data") or {}).get("metrics") or {} for record in outcomes]
     def sum_known(key):
         values = [item.get(key) for item in outcome_data]
         return sum(values) if values and all(value is not None for value in values) else None
+    context = observed_context(records)
+    prompt_chars = context["components"].get("prompt", 0)
+    transformed_prompt_chars = context["components"].get("transformedPrompt", 0)
+    assistant_chars = context["components"].get("assistant", 0)
+    referenced_files = set()
+    file_pattern = re.compile(r"[a-zA-Z0-9_./\\-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|json|md|css|html|ya?ml)\b")
+    for record in records:
+        referenced_files.update(file_pattern.findall(text_from_record(record)))
     return {
         "prompts": counts.get("user.prompt", 0),
         "turns": counts.get("turn.ended", 0) or counts.get("agent.stopped", 0),
@@ -510,24 +748,134 @@ def session_metrics(records):
         "toolStarts": counts.get("tool.started", 0),
         "toolCompletions": counts.get("tool.completed", 0),
         "toolFailures": counts.get("tool.failed", 0),
+        "filesReferenced": len(referenced_files),
         "errors": counts.get("error.occurred", 0),
         "outcomes": len(outcomes),
         "filesChanged": sum((item.get("filesChanged") or 0) for item in outcome_data),
         "linesAdded": sum_known("linesAdded"),
         "linesDeleted": sum_known("linesDeleted"),
-        "observedChars": observed_chars,
+        "observedChars": context["observedChars"],
         "promptChars": prompt_chars,
+        "transformedPromptChars": transformed_prompt_chars,
         "assistantChars": assistant_chars,
-        "estimatedTokens": math.ceil(observed_chars / 4) if observed_chars else 0,
+        "estimatedTokens": context["estimatedTokens"],
+        "contextMeasurement": context["measurement"],
+        "providerUsage": context["providerUsage"],
+        "durationSeconds": duration_seconds(records),
     }
 
 
-def recommendation(prompt, quality, decomposition, outcome, records):
+def append_context_snapshot(log_path, session_id, workspace, prompt_event_id, event_id):
+    records = session_records(load_records(log_path), session_id)
+    context_turn = latest_context_turn(records, prompt_event_id)
+    if not context_turn:
+        return
+    session = session_metrics(records)
+    timestamp = now_iso()
+    threshold_state = context_turn["warning"]["thresholdState"]
+    record = {
+        "schemaVersion": 2,
+        "eventId": "context_" + hash_value({
+            "sessionId": session_id,
+            "promptEventId": prompt_event_id,
+            "eventId": event_id,
+            "value": context_turn["contextExposureTokensEstimate"],
+            "estimatorVersion": CONTEXT_ESTIMATOR_VERSION,
+        }),
+        "recordType": "context.load_snapshot",
+        "source": "analytics",
+        "sourceEventType": "estimated_context_pressure",
+        "sessionId": session_id,
+        "turnId": None,
+        "parentId": prompt_event_id,
+        "timestamp": timestamp,
+        "localTimestamp": timestamp,
+        "recordedAt": timestamp,
+        "workspace": str(workspace),
+        "data": {
+            "estimatedContextPressure": {
+                "value": context_turn["contextExposureTokensEstimate"],
+                "unit": "estimated_tokens",
+                "utilization": context_turn["warning"]["utilization"],
+                "measurementMethod": "estimate",
+                "estimateMethod": "observable_text_and_model_interactions",
+                "confidence": "low",
+                "thresholdState": threshold_state,
+                "terminology": "Estimated Context Pressure",
+                "estimatorVersion": CONTEXT_ESTIMATOR_VERSION,
+            },
+            "observableSignals": {
+                "turns": session["prompts"],
+                "promptCharacters": session["promptChars"],
+                "responseCharacters": session["assistantChars"],
+                "observedCharacters": session["observedChars"],
+                "toolCalls": session["toolStarts"],
+                "toolFailures": session["toolFailures"] + session["errors"],
+                "filesReferenced": session["filesReferenced"],
+                "filesChanged": session["filesChanged"],
+                "linesAdded": session["linesAdded"],
+                "linesDeleted": session["linesDeleted"],
+                "durationSeconds": session["durationSeconds"],
+            },
+            "providerUsageObserved": bool(session["providerUsage"]),
+            "providerUsageLimitation": "Per-event usage does not prove complete active-context utilization.",
+        },
+    }
+    append_record(log_path, record)
+
+
+def intervention_metrics(session_id):
+    records = [
+        record for record in load_intervention_records()
+        if not record.get("sessionId") or not session_id or record.get("sessionId") == session_id
+    ]
+    counts = {}
+    for record in records:
+        event_type = str(record.get("eventType") or "unknown")
+        counts[event_type] = counts.get(event_type, 0) + 1
+    choices = [record.get("data") or {} for record in records if record.get("eventType", "").endswith("choice")]
+    return {
+        "records": records,
+        "counts": counts,
+        "choices": choices,
+        "promptReviews": counts.get("prompt.reviewed", 0),
+        "decompositionEvaluations": counts.get("task.decomposition_evaluated", 0),
+        "contextWarnings": counts.get("context.warning", 0),
+        "curationCompleted": counts.get("context.curation_completed", 0),
+        "preflightStarted": counts.get("preflight.started", 0),
+        "preflightCompleted": counts.get("preflight.completed", 0),
+        "preflightGateDenials": counts.get("preflight.gate_denied", 0),
+        "preflightFallbackRequests": counts.get("preflight.fallback_requested", 0),
+        "preflightBypasses": counts.get("preflight.bypassed", 0),
+        "toolFailures": counts.get("tool.failed", 0) + counts.get("preflight.tool_failed", 0),
+        "originalRetained": sum(
+            bool((record.get("data") or {}).get("originalPromptRetained") or (record.get("data") or {}).get("originalTaskRetained"))
+            for record in records
+        ),
+        "curationAccepted": sum(
+            bool((record.get("data") or {}).get("accepted"))
+            for record in records if record.get("eventType") == "context.curation_completed"
+        ),
+    }
+
+
+def recommendation(prompt, quality, decomposition, outcome, records, context_turn=None):
     metrics = (outcome.get("data") or {}).get("metrics") if outcome else None
     failures = sum(record.get("recordType") in {"tool.failed", "error.occurred"} for record in records)
     missing = {item["key"] for item in quality["checks"] if not item["present"]}
     observed = observed_size((outcome or {}).get("data"))
-    if "goal" in missing:
+    template = "Implement [goal] in [files or scope]. Context: [relevant problem]. Constraints: [constraints]. Done when: [acceptance criteria]. Validate with: [command]."
+    if context_turn and context_turn["warning"]["level"] == "high":
+        title = "Start fresh with a compact handoff"
+        why = "This turn reached high Estimated Context Pressure, so continuing the same session may resend a large amount of prior context."
+        priority = "high"
+        bullets = [
+            f"Estimated Context Pressure: approximately {format_number(context_turn['contextExposureTokensEstimate'])} estimated tokens across {context_turn['modelInteractionsEstimate']} estimated model interaction(s).",
+            "First ask Copilot for a handoff summary of the current state, decisions, unresolved issues, relevant files, and next action in 300 words or fewer; do not edit files.",
+            "Start a new Copilot session and include only that summary plus the relevant files. Avoid `continue` or re-pasting the full transcript."
+        ]
+        template = "Summarize the current state, decisions, unresolved issues, relevant files, and next action in 300 words or fewer. Do not modify files."
+    elif "goal" in missing:
         title = "State the goal as an action"
         why = "The prompt does not clearly identify the change or outcome you want."
         priority = "high"
@@ -542,6 +890,16 @@ def recommendation(prompt, quality, decomposition, outcome, records):
         why = "The observed worktree change is large enough that smaller phases should be easier to review."
         priority = "high"
         bullets = ["Name the files or module to change.", "Ask for one coherent phase at a time."]
+    elif context_turn and context_turn["warning"]["level"] == "medium":
+        title = "Keep the next context focused"
+        why = "Estimated Context Pressure is growing relative to this session or the configured threshold."
+        priority = "medium"
+        bullets = [
+            "Start the next prompt with a short summary rather than repeating the conversation.",
+            "Name only the files and constraints needed for the next step.",
+            "If the session keeps growing, request a handoff summary and start a fresh session."
+        ]
+        template = "Using this concise context: [summary], implement [goal] only in [files or scope]. Done when: [acceptance criteria]. Validate with: [command]."
     elif "scope" in missing:
         title = "Name the files or scope"
         why = "A concrete scope reduces unrelated edits and makes the change easier to review."
@@ -562,7 +920,6 @@ def recommendation(prompt, quality, decomposition, outcome, records):
         why = "The prompt already contains the core ingredients for an efficient turn."
         priority = "low"
         bullets = ["Continue naming scope, outcome, and validation together."]
-    template = "Implement [goal] in [files or scope]. Context: [relevant problem]. Constraints: [constraints]. Done when: [acceptance criteria]. Validate with: [command]."
     return {"priority": priority, "title": title, "why": why, "bullets": bullets, "template": template}
 
 
@@ -596,7 +953,8 @@ def build_feedback(records, session_id):
     outcome = latest_outcome(selected, (prompt_record or {}).get("eventId"))
     outcome_data = (outcome or {}).get("data") or {}
     metrics = outcome_data.get("metrics") or {}
-    recommendation_data = recommendation(prompt, quality, decomposition, outcome, selected)
+    context_turn = latest_context_turn(selected, (prompt_record or {}).get("eventId"))
+    recommendation_data = recommendation(prompt, quality, decomposition, outcome, selected, context_turn)
     observed = observed_size(outcome_data)
     session = session_metrics(selected)
     updated = now_iso()
@@ -620,11 +978,12 @@ def build_feedback(records, session_id):
         f"- Task decomposition: **{decomposition['score']}/100** ({len(decomposition['steps'])} detected step(s))",
         f"- Observed turn size: **{observed}**",
         f"- Worktree delta: **{metrics.get('filesChanged', 0)} file(s)**, **{format_number(metrics.get('linesAdded'))} added / {format_number(metrics.get('linesDeleted'))} deleted lines**",
+        f"- Estimated Context Pressure: **~{format_number(context_turn['contextExposureTokensEstimate'])} estimated tokens** ({context_turn['warning']['thresholdState']})" if context_turn else "- Estimated Context Pressure: **not measured**",
         "",
         "## Suggested Next Prompt",
         f"> {recommendation_data['template']}",
         "",
-        "_Detailed metrics are in `Code Buddy Analytics.md`. Exact model token usage is not exposed by the hook; context numbers are deterministic observed-text estimates._",
+        "_Detailed metrics are in `Code Buddy Analytics.md`. Provider usage is used when present; otherwise context numbers are deterministic observed-text estimates._",
         "",
     ])
     return "\n".join(lines)
@@ -641,7 +1000,9 @@ def build_analytics(records, session_id):
     outcome_data = (outcome or {}).get("data") or {}
     metrics = outcome_data.get("metrics") or {}
     session = session_metrics(selected)
-    recommendation_data = recommendation(prompt, quality, decomposition, outcome, selected)
+    context_turn = latest_context_turn(selected, (prompt_record or {}).get("eventId"))
+    recommendation_data = recommendation(prompt, quality, decomposition, outcome, selected, context_turn)
+    interventions = intervention_metrics(session_id)
     lines = [
         "# Code Buddy Analytics",
         "",
@@ -660,12 +1021,57 @@ def build_analytics(records, session_id):
         f"| Observed files changed | {session['filesChanged']} |",
         f"| Observed lines added / deleted | {format_number(session['linesAdded'])} / {format_number(session['linesDeleted'])} |",
         "",
-        "## Context Estimate",
+        "## Estimated Context Pressure",
         "| Measure | Characters | Estimated tokens* |",
         "|---|---:|---:|",
         f"| User prompts | {format_number(session['promptChars'])} | {math.ceil(session['promptChars'] / 4) if session['promptChars'] else 0:,} |",
+        f"| Transformed prompts | {format_number(session['transformedPromptChars'])} | {math.ceil(session['transformedPromptChars'] / 4) if session['transformedPromptChars'] else 0:,} |",
         f"| Assistant messages | {format_number(session['assistantChars'])} | {math.ceil(session['assistantChars'] / 4) if session['assistantChars'] else 0:,} |",
         f"| Observed textual events | {format_number(session['observedChars'])} | {session['estimatedTokens']:,} |",
+        f"| Measurement | — | `{session['contextMeasurement']}` |",
+        f"| Provider input / cached / output tokens | — | {format_number(session['providerUsage'].get('inputTokens'))} / {format_number(session['providerUsage'].get('cachedInputTokens'))} / {format_number(session['providerUsage'].get('outputTokens'))} |",
+        "",
+        "## Latest Turn Context",
+        "| Measure | Value |",
+        "|---|---:|",
+        f"| Measurement | `{context_turn['measurement']}` |" if context_turn else "| Measurement | not available |",
+        f"| Prompt tokens (estimate) | {format_number(context_turn['promptTokensEstimate'])} |" if context_turn else "| Prompt tokens (estimate) | not available |",
+        f"| Prior session tokens (estimate) | {format_number(context_turn['priorSessionTokensEstimate'])} |" if context_turn else "| Prior session tokens (estimate) | not available |",
+        f"| Turn observed tokens (estimate) | {format_number(context_turn['turnObservedTokensEstimate'])} |" if context_turn else "| Turn observed tokens (estimate) | not available |",
+        f"| Model interactions (estimate) | {format_number(context_turn['modelInteractionsEstimate'])} |" if context_turn else "| Model interactions (estimate) | not available |",
+        f"| Repeated prior context (estimate) | {format_number(context_turn['repeatedPriorContextTokensEstimate'])} |" if context_turn else "| Repeated prior context (estimate) | not available |",
+        f"| Estimated Context Pressure | {format_number(context_turn['contextExposureTokensEstimate'])} estimated tokens |" if context_turn else "| Estimated Context Pressure | not available |",
+        f"| Baseline ratio | {context_turn['warning']['ratio'] if context_turn and context_turn['warning']['ratio'] is not None else 'not available'} |" if context_turn else "| Baseline ratio | not available |",
+        f"| Warning level | {context_turn['warning']['level']} |" if context_turn else "| Warning level | not available |",
+        f"| Estimated utilization | {context_turn['warning']['utilization']:.1%} |" if context_turn else "| Estimated utilization | not available |",
+        f"| Estimator version | `{CONTEXT_ESTIMATOR_VERSION}` |",
+        "",
+        "## Context By Turn",
+        "| Turn | Time | Prompt tokens | Model calls | Estimated Context Pressure | Estimate evidence | Warning |",
+        "|---:|---|---:|---:|---:|---|---|",
+    ]
+    for turn in context_turns(selected)[-20:]:
+        lines.append(
+            f"| {turn['promptNumber']} | {markdown_escape(turn.get('timestamp') or '')} | "
+            f"{format_number(turn['promptTokensEstimate'])} | {format_number(turn['modelInteractionsEstimate'])} | {format_number(turn['contextExposureTokensEstimate'])} | "
+            f"`{turn['measurement']}` | {turn['warning']['level']} |"
+        )
+    lines.extend([
+        "",
+        "## Code Buddy Interventions",
+        "| Metric | Value |",
+        "|---|---:|",
+        f"| Prompt reviews | {interventions['promptReviews']} |",
+        f"| Task-decomposition evaluations | {interventions['decompositionEvaluations']} |",
+        f"| Preflights started / completed | {interventions['preflightStarted']} / {interventions['preflightCompleted']} |",
+        f"| Implementation tools denied pending preflight | {interventions['preflightGateDenials']} |",
+        f"| Controlled fallback requested / used | {interventions['preflightFallbackRequests']} / {interventions['preflightBypasses']} |",
+        f"| Context warnings | {interventions['contextWarnings']} |",
+        f"| Context curations completed | {interventions['curationCompleted']} |",
+        f"| Curations accepted | {interventions['curationAccepted']} |",
+        f"| Original prompt/task retained | {interventions['originalRetained']} |",
+        f"| Optional AI tool failures | {interventions['toolFailures']} |",
+        "",
         "",
         "## Latest Prompt",
         f"**Prompt:** {markdown_escape(prompt or 'No prompt captured yet.')}",
@@ -677,7 +1083,7 @@ def build_analytics(records, session_id):
         "### Rubric",
         "| Dimension | Result | Points |",
         "|---|---|---:|",
-    ]
+    ])
     for item in quality["checks"]:
         lines.append(f"| {item['label']} | {'present' if item['present'] else 'missing'} | {item['points']} |")
     lines.extend(["", "### Detected Task Steps"])
@@ -709,10 +1115,11 @@ def build_analytics(records, session_id):
     lines.extend([
         "",
         "## Interpretation Rules",
-        "- Prompt quality is a deterministic rubric for goal, scope, context, constraints, acceptance criteria, and validation.",
-        "- Task decomposition uses numbered/bulleted lines, sentence boundaries, and action verbs; it does not infer hidden intent.",
+        "- The prompt-quality rubric and detected steps in this retrospective report are deterministic heuristics retained for backward compatibility; live prompt review and decomposition use structured semantic tools.",
         "- File and line metrics are the before/after worktree delta around a prompt. They can include edits made outside Copilot during that interval.",
-        "- Exact model context/token usage and hidden system prompts are not exposed by the hook. Token values are observed-text estimates using approximately four characters per token.",
+        "- Estimated Context Pressure approximates visible context carried across the session and repeated around tool calls; it is neither actual active-context utilization nor a billing statement.",
+        "- Provider-reported per-event usage is recorded when present but does not establish complete active-context utilization; fallback estimates use approximately four characters per token.",
+        "- Hidden system prompts, selected file context, caching, compaction, and internal model calls may make real usage different.",
         "",
     ])
     return "\n".join(lines)
@@ -739,6 +1146,15 @@ def start_turn():
     prompt_event_id = os.environ.get("TOKEN_LENS_EVENT_ID")
     if not env_bool("TOKEN_LENS_TRACK_WORKTREE_CHANGES", True):
         return
+    state_path, existing_state = load_snapshot(state_dir, session_id)
+    if existing_state and existing_state.get("snapshot"):
+        prompt_event_ids = existing_state.get("promptEventIds") or []
+        if prompt_event_id and prompt_event_id not in prompt_event_ids:
+            prompt_event_ids.append(prompt_event_id)
+        existing_state["promptEventIds"] = prompt_event_ids
+        existing_state["lastPromptEventId"] = prompt_event_id
+        state_path.write_text(json.dumps(existing_state, ensure_ascii=False), encoding="utf-8")
+        return
     snapshot = capture_snapshot(workspace, max(10000, env_int("TOKEN_LENS_SNAPSHOT_MAX_FILE_BYTES", 1000000)))
     save_snapshot(state_dir, session_id, prompt_event_id, workspace, snapshot)
 
@@ -750,6 +1166,7 @@ def end_turn():
     state_path, state = load_snapshot(state_dir, session_id)
     available = bool(state and env_bool("TOKEN_LENS_TRACK_WORKTREE_CHANGES", True))
     prompt_event_id = (state or {}).get("promptEventId")
+    prompt_event_ids = (state or {}).get("promptEventIds") or ([prompt_event_id] if prompt_event_id else [])
     if available:
         max_bytes = max(10000, env_int("TOKEN_LENS_SNAPSHOT_MAX_FILE_BYTES", 1000000))
         before = state.get("snapshot")
@@ -769,7 +1186,8 @@ def end_turn():
             "snapshotTruncated": False,
             "changedFiles": [],
         }
-    append_outcome(log_path, session_id, workspace, prompt_event_id, event_id, metrics, available)
+    append_outcome(log_path, session_id, workspace, prompt_event_id, prompt_event_ids, event_id, metrics, available)
+    append_context_snapshot(log_path, session_id, workspace, prompt_event_id, event_id)
     refresh_reports(log_path, feedback_path, analytics_path, session_id)
 
 

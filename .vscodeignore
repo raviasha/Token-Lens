@@ -2,7 +2,10 @@
 src/**
 test/**
 node_modules/**
+.worktrees/**
 **/*.map
 tsconfig.json
 package-lock.json
 .gitignore
+*.vsix
+*-SHA256SUMS.txt

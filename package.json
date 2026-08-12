@@ -2,15 +2,15 @@
   "name": "code-buddy",
   "displayName": "Code Buddy",
   "description": "Capture GitHub Copilot agent sessions and provide structured local coding feedback.",
-  "version": "0.6.2",
+  "version": "0.8.2",
   "publisher": "code-buddy",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/raviasha/Code_Buddy"
+    "url": "https://github.com/raviasha/Token-Lens"
   },
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.95.0"
   },
   "categories": [
     "Other"
@@ -22,6 +22,12 @@
     "onCommand:tokenLens.openCodeBuddy",
     "onCommand:tokenLens.openAnalytics",
     "onCommand:tokenLens.openHookConfig",
+    "onCommand:tokenLens.openAgentInstructions",
+    "onCommand:tokenLens.openInterventions",
+    "onCommand:tokenLens.reviewPrompt",
+    "onCommand:tokenLens.decomposeTask",
+    "onCommand:tokenLens.measureContext",
+    "onCommand:tokenLens.curateContext",
     "workspaceContains:.github/hooks/token-lens.json"
   ],
   "main": "./dist/extension.js",
@@ -50,6 +56,141 @@
       {
         "command": "tokenLens.openHookConfig",
         "title": "Code Buddy: Open Hook Configuration"
+      },
+      {
+        "command": "tokenLens.openAgentInstructions",
+        "title": "Code Buddy: Open Agent Instructions"
+      },
+      {
+        "command": "tokenLens.openInterventions",
+        "title": "Code Buddy: Open Intervention Log"
+      },
+      {
+        "command": "tokenLens.reviewPrompt",
+        "title": "Code Buddy: Review Prompt"
+      },
+      {
+        "command": "tokenLens.decomposeTask",
+        "title": "Code Buddy: Decompose Task"
+      },
+      {
+        "command": "tokenLens.measureContext",
+        "title": "Code Buddy: Measure Context"
+      },
+      {
+        "command": "tokenLens.curateContext",
+        "title": "Code Buddy: Curate Context"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "code-buddy_reviewPrompt",
+        "displayName": "Code Buddy Prompt Reviewer",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "codeBuddyPromptReviewer",
+        "icon": "$(checklist)",
+        "userDescription": "Evaluate a coding prompt and offer selectable, intent-preserving improvements.",
+        "modelDescription": "Evaluate every meaningful coding prompt before substantial implementation. Return a structured score, contextual dimension assessments, issues, suggestions, selectable enhanced prompts, and an original-prompt option. Do not use for tiny control replies such as yes, continue, or run it. Never silently replace the user's prompt.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "prompt": { "type": "string", "description": "The developer's original coding prompt, unchanged." },
+            "sessionId": { "type": "string", "description": "Optional coding-agent session identifier." },
+            "taskId": { "type": "string", "description": "Optional task identifier." },
+            "relevantContext": { "type": "array", "items": { "type": "string" }, "description": "Only context already known to be relevant to the prompt." }
+          },
+          "required": ["prompt"]
+        }
+      },
+      {
+        "name": "code-buddy_decomposeTask",
+        "displayName": "Code Buddy Task Decomposer",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "codeBuddyTaskDecomposer",
+        "icon": "$(list-tree)",
+        "userDescription": "Assess task complexity and offer dynamic decomposition strategies when useful.",
+        "modelDescription": "Evaluate each meaningful coding task before substantial implementation. Return structured complexity, reasons, dynamic decomposition strategies with dependencies, and an original-task option. Recommend decomposition only when it improves execution; never force it.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "task": { "type": "string", "description": "The developer's original coding task, unchanged." },
+            "sessionId": { "type": "string" },
+            "taskId": { "type": "string" },
+            "relevantContext": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["task"]
+        }
+      },
+      {
+        "name": "code-buddy_measureContext",
+        "displayName": "Code Buddy Context Measurement",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "codeBuddyContextMeasurement",
+        "icon": "$(dashboard)",
+        "userDescription": "Verify context pressure using API, vision, or an explicitly labeled estimate.",
+        "modelDescription": "Measure context using the strict hierarchy native/public API, then permitted visual inspection, then Code Buddy estimate. Only supply nativeMeasurement when a provider API reports complete active context. Only supply visionMeasurement after actually reading a visible context indicator. The result preserves measured versus estimated terminology.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sessionId": { "type": "string" },
+            "nativeMeasurement": { "$ref": "#/definitions/measurement" },
+            "visionMeasurement": { "$ref": "#/definitions/measurement" },
+            "estimate": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number", "minimum": 0 },
+                "unit": { "enum": ["estimated_tokens"] },
+                "utilization": { "type": "number", "minimum": 0 },
+                "confidence": { "enum": ["high", "medium", "low"] },
+                "thresholdState": { "enum": ["normal", "warning", "critical"] },
+                "estimatorVersion": { "type": "string" }
+              },
+              "required": ["value", "unit", "confidence", "thresholdState"]
+            }
+          },
+          "definitions": {
+            "measurement": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "number", "minimum": 0 },
+                "unit": { "enum": ["tokens"] },
+                "confidence": { "enum": ["high", "medium", "low"] },
+                "providerId": { "type": "string" },
+                "evidence": { "type": "string" }
+              },
+              "required": ["value", "unit", "confidence", "providerId"]
+            }
+          }
+        }
+      },
+      {
+        "name": "code-buddy_curateContext",
+        "displayName": "Code Buddy Context Curator",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "codeBuddyContextCurator",
+        "icon": "$(filter)",
+        "userDescription": "Create a previewable minimum-sufficient handoff for a current or fresh task.",
+        "modelDescription": "Use only after the developer chooses context curation or a fresh-task handoff. Produce structured minimum sufficient context, preserve pinned items, identify excluded history, and let the developer remove, pin, add, preview, accept, or cancel items.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "targetTask": { "type": "string" },
+            "mode": { "enum": ["fresh_task", "continue_current"] },
+            "sessionId": { "type": "string" },
+            "conversationHistory": { "type": "array", "items": { "type": "string" } },
+            "knownDecisions": { "type": "array", "items": { "type": "string" } },
+            "relevantFiles": { "type": "array", "items": { "type": "string" } },
+            "constraints": { "type": "array", "items": { "type": "string" } },
+            "implementationState": { "type": "array", "items": { "type": "string" } },
+            "completedWork": { "type": "array", "items": { "type": "string" } },
+            "remainingWork": { "type": "array", "items": { "type": "string" } },
+            "knownIssues": { "type": "array", "items": { "type": "string" } },
+            "validation": { "type": "array", "items": { "type": "string" } },
+            "openQuestions": { "type": "array", "items": { "type": "string" } },
+            "pinnedItems": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["targetTask", "mode"]
+        }
       }
     ],
     "configuration": {
@@ -103,6 +244,82 @@
           "type": "string",
           "default": "",
           "description": "Optional Python command for Code Buddy analytics. Empty uses python3, then python."
+        },
+        "tokenLens.interventionLogFile": {
+          "type": "string",
+          "default": ".code-buddy/interventions.jsonl",
+          "description": "Local JSONL path for structured Code Buddy evaluations, recommendations, choices, and fallbacks."
+        },
+        "tokenLens.promptReview.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable semantic prompt review for meaningful coding prompts."
+        },
+        "tokenLens.promptReview.interventionThreshold": {
+          "type": "number",
+          "default": 75,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Prompt-review scores below this threshold recommend intervention."
+        },
+        "tokenLens.taskDecomposition.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable semantic task-complexity and decomposition evaluation."
+        },
+        "tokenLens.taskDecomposition.interventionThreshold": {
+          "type": "number",
+          "default": 65,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Task-complexity scores at or above this threshold recommend decomposition."
+        },
+        "tokenLens.preflight.enforceBeforeImplementation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Deterministically require Prompt Reviewer and Task Decomposer completion before the first non-observational implementation tool for each meaningful prompt."
+        },
+        "tokenLens.preflight.denialsBeforeFallback": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Number of implementation-tool denials used to redirect the agent to Code Buddy tools before an explicit controlled-fallback approval is offered."
+        },
+        "tokenLens.context.estimatedContextCapacityTokens": {
+          "type": "number",
+          "default": 40000,
+          "minimum": 1000,
+          "description": "Configurable denominator used only for Estimated Context Pressure; it is not a claim about the active model's actual context window."
+        },
+        "tokenLens.context.warningThreshold": {
+          "type": "number",
+          "default": 0.7,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Estimated Context Pressure ratio that triggers a warning."
+        },
+        "tokenLens.context.criticalThreshold": {
+          "type": "number",
+          "default": 0.85,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Estimated Context Pressure ratio that triggers a critical recommendation."
+        },
+        "tokenLens.context.allowVisionVerification": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow an invoking agent with visual capability to supply a visually verified context indicator when no native API measurement exists."
+        },
+        "tokenLens.context.offerCurationOnNewSession": {
+          "type": "boolean",
+          "default": true,
+          "description": "Offer to carry forward minimum-sufficient prior context when the first meaningful prompt arrives in a different Copilot session."
+        },
+        "tokenLens.context.offerCurationOnNewTask": {
+          "type": "boolean",
+          "default": true,
+          "description": "Offer a task-specific handoff when deterministic cues indicate a substantially new task."
         }
       }
     }
@@ -110,12 +327,12 @@
   "scripts": {
     "compile": "tsc -p tsconfig.json",
     "build": "npm run compile",
-    "test": "npm run build && node --test test/hook.test.js test/code_buddy.test.js",
+    "test": "npm run build && node --test test/hook.test.js test/code_buddy.test.js test/rearchitecture.test.js test/governance.test.js",
     "watch": "tsc -p tsconfig.json --watch"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "^1.95.0",
     "typescript": "^5.7.0"
   }
 }
