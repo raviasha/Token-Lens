@@ -10,13 +10,16 @@ import {
   PromptOption,
   PromptReviewInput,
   PromptReviewResult,
+  SessionFitInput,
+  SessionFitResult,
   TaskDecompositionInput,
   TaskDecompositionResult,
   TOOL_CONTRACT_VERSION,
   ToolFailure
 } from '../core/contracts';
-import { decompositionRecommended, promptInterventionRecommended, stableId } from '../core/policyEngine';
+import { decompositionRecommended, detectNewTask, promptInterventionRecommended, shouldRecommendFreshTask, stableId } from '../core/policyEngine';
 import { CodeBuddyPolicy, CurationSection } from '../core/contracts';
+import rubric from '../resources/code-buddy-scoring-rubric.json';
 
 const promptDimensions = new Set<PromptDimension>([
   'goalClarity', 'scope', 'relevantContext', 'constraints', 'acceptanceCriteria', 'validation', 'ambiguity', 'breadth'
@@ -226,6 +229,66 @@ export function taskDecompositionFallback(input: TaskDecompositionInput, failure
     originalTaskOption: { id: 'original', label: 'Continue with the original task', task: input.task },
     originalTaskRetained: true,
     failure
+  };
+}
+
+export function buildSessionFitRequest(input: SessionFitInput): string {
+  return [
+    'You are the semantic Session Fit evaluator for Code Buddy.',
+    'Determine whether the current meaningful coding prompt starts a substantially new task or continues the prior task.',
+    'Use the prior prompt only as supplied. Do not invent task history or create a task; this assessment only informs a developer-controlled recommendation.',
+    'Return JSON only with newTaskLikelihood (0-100), confidence (high, medium, or low), and a concise reason.',
+    `CALIBRATION: continuation (${rubric.sessionFit.continuation.example}) => ${rubric.sessionFit.continuation.newTaskLikelihood}; unrelated (${rubric.sessionFit.unrelated.example}) => ${rubric.sessionFit.unrelated.newTaskLikelihood}.`,
+    `CURRENT PROMPT: ${input.prompt}`,
+    ...(input.previousPrompt ? [`PREVIOUS PROMPT: ${input.previousPrompt}`] : ['PREVIOUS PROMPT: unavailable']),
+    ...(input.relevantContext?.length ? [`RELEVANT CONTEXT:\n${input.relevantContext.join('\n')}`] : [])
+  ].join('\n\n');
+}
+
+export function normalizeSessionFit(raw: unknown, input: SessionFitInput, policy: CodeBuddyPolicy): SessionFitResult {
+  const object = asObject(raw);
+  const newTaskLikelihood = score(object?.newTaskLikelihood);
+  const confidence = object?.confidence;
+  const reason = object?.reason;
+  if (newTaskLikelihood === undefined || !['high', 'medium', 'low'].includes(String(confidence)) || typeof reason !== 'string' || !reason.trim()) {
+    throw new Error('Session Fit returned an invalid likelihood, confidence, or reason.');
+  }
+  return {
+    contractVersion: TOOL_CONTRACT_VERSION,
+    kind: 'session_fit',
+    status: 'ok',
+    newTaskLikelihood,
+    confidence: confidence as SessionFitResult['confidence'],
+    reason,
+    freshTaskRecommended: shouldRecommendFreshTask(newTaskLikelihood, policy),
+    assessmentSource: 'codex_model'
+  };
+}
+
+export function sessionFitFallback(input: SessionFitInput, policy: CodeBuddyPolicy): SessionFitResult {
+  if (!input.previousPrompt?.trim()) {
+    return {
+      contractVersion: TOOL_CONTRACT_VERSION,
+      kind: 'session_fit',
+      status: 'fallback',
+      newTaskLikelihood: 0,
+      confidence: 'low',
+      reason: 'No prior meaningful task to compare.',
+      freshTaskRecommended: false,
+      assessmentSource: 'lexical_fallback'
+    };
+  }
+  const assessment = detectNewTask(input.previousPrompt, input.prompt, policy.sessionFit.fallbackLexicalOverlapBelow);
+  const newTaskLikelihood = assessment.isLikelyNewTask ? 80 : 0;
+  return {
+    contractVersion: TOOL_CONTRACT_VERSION,
+    kind: 'session_fit',
+    status: 'fallback',
+    newTaskLikelihood,
+    confidence: assessment.confidence,
+    reason: assessment.reason,
+    freshTaskRecommended: shouldRecommendFreshTask(newTaskLikelihood, policy),
+    assessmentSource: 'lexical_fallback'
   };
 }
 

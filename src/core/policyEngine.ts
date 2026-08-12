@@ -109,7 +109,11 @@ export interface CurationBoundaryAssessment {
   taskBoundary?: TaskBoundaryAssessment;
 }
 
-export function detectNewTask(previousPrompt: string, currentPrompt: string): TaskBoundaryAssessment {
+export function detectNewTask(
+  previousPrompt: string,
+  currentPrompt: string,
+  lexicalOverlapBelow = DEFAULT_POLICY.sessionFit.fallbackLexicalOverlapBelow
+): TaskBoundaryAssessment {
   if (!isMeaningfulPrompt(previousPrompt) || !isMeaningfulPrompt(currentPrompt)) {
     return { isLikelyNewTask: false, confidence: 'low', overlap: 1, reason: 'Insufficient meaningful prompt history.' };
   }
@@ -120,7 +124,7 @@ export function detectNewTask(previousPrompt: string, currentPrompt: string): Ta
   const current = taskTerms(currentPrompt);
   const shared = [...current].filter((term) => previous.has(term)).length;
   const overlap = shared / Math.max(1, Math.min(previous.size, current.size));
-  const isLikelyNewTask = previous.size >= 2 && current.size >= 2 && overlap < 0.2;
+  const isLikelyNewTask = previous.size >= 2 && current.size >= 2 && overlap < lexicalOverlapBelow;
   return {
     isLikelyNewTask,
     confidence: overlap < 0.1 ? 'high' : overlap < 0.3 ? 'medium' : 'low',

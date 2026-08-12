@@ -13,8 +13,10 @@ const {
   contextCurationFallback,
   normalizeCuratedContext,
   normalizePromptReview,
+  normalizeSessionFit,
   normalizeTaskDecomposition,
   promptReviewFallback,
+  sessionFitFallback,
   taskDecompositionFallback
 } = require('../dist/ai/toolContracts.js');
 const { JsonlInterventionStore } = require('../dist/core/eventStore.js');
@@ -186,10 +188,33 @@ test('fallback context observation is explicitly estimated', () => {
   assert.equal(snapshot.signals.durationSeconds, 1);
 });
 
+test('session fit uses a calibrated semantic assessment and an explicit continuation fallback', () => {
+  const input = {
+    prompt: 'Build a CSV export endpoint in src/reports/exportController.ts.',
+    previousPrompt: 'Implement OAuth refresh handling in src/auth/tokenService.ts.'
+  };
+  const result = normalizeSessionFit({
+    newTaskLikelihood: 82,
+    confidence: 'high',
+    reason: 'CSV export is unrelated to authentication.'
+  }, input, DEFAULT_POLICY);
+
+  assert.equal(result.freshTaskRecommended, true);
+  assert.equal(result.assessmentSource, 'codex_model');
+  assert.equal(sessionFitFallback({
+    prompt: 'Continue authentication work and add expiry tests.',
+    previousPrompt: 'Implement OAuth refresh handling in src/auth/tokenService.ts.'
+  }, DEFAULT_POLICY).newTaskLikelihood, 0);
+});
+
 test('managed agent instructions enforce evaluation and developer control', () => {
   const instructions = buildCodeBuddyAgentInstructions();
   assert.match(instructions, /#tool:codeBuddyPromptReviewer/);
   assert.match(instructions, /#tool:codeBuddyTaskDecomposer/);
+  assert.match(instructions, /#tool:codeBuddyContextMeasurement/);
+  assert.match(instructions, /#tool:codeBuddySessionFit/);
+  assert.match(instructions, /Code Buddy:/);
+  assert.match(instructions, /Estimated Context Pressure/);
   assert.match(instructions, /Never silently rewrite/);
   assert.match(instructions, /Continue with the original/);
   assert.match(instructions, /new Copilot session/);

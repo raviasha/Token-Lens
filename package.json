@@ -164,6 +164,26 @@
         }
       },
       {
+        "name": "code-buddy_assessSessionFit",
+        "displayName": "Code Buddy Session Fit",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "codeBuddySessionFit",
+        "icon": "$(split-horizontal)",
+        "userDescription": "Assess whether a meaningful coding request belongs in the current task or merits a developer-controlled fresh task.",
+        "modelDescription": "Assess session fit before substantive implementation. Return a calibrated new-task likelihood, confidence, and reason. Never create, switch, or curate a task automatically; the developer chooses whether to continue or use a fresh-task handoff.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "prompt": { "type": "string", "description": "The current developer prompt, unchanged." },
+            "previousPrompt": { "type": "string", "description": "The prior meaningful prompt when available." },
+            "sessionId": { "type": "string" },
+            "taskId": { "type": "string" },
+            "relevantContext": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["prompt"]
+        }
+      },
+      {
         "name": "code-buddy_curateContext",
         "displayName": "Code Buddy Context Curator",
         "canBeReferencedInPrompt": true,

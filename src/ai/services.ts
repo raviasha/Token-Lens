@@ -5,6 +5,8 @@ import {
   CuratedContextBundle,
   PromptReviewInput,
   PromptReviewResult,
+  SessionFitInput,
+  SessionFitResult,
   TaskDecompositionInput,
   TaskDecompositionResult,
   ToolFailure
@@ -12,12 +14,15 @@ import {
 import {
   buildContextCurationRequest,
   buildPromptReviewRequest,
+  buildSessionFitRequest,
   buildTaskDecompositionRequest,
   contextCurationFallback,
   normalizeCuratedContext,
   normalizePromptReview,
   normalizeTaskDecomposition,
   promptReviewFallback,
+  normalizeSessionFit,
+  sessionFitFallback,
   taskDecompositionFallback
 } from './toolContracts';
 import { ReasonerError, StructuredReasoner } from './vscodeReasoner';
@@ -61,6 +66,19 @@ export class TaskDecompositionService {
       return normalizeTaskDecomposition(raw, input, this.policy);
     } catch (error) {
       return taskDecompositionFallback(input, failureFromError(error, 'use_original'));
+    }
+  }
+}
+
+export class SessionFitService {
+  public constructor(private readonly reasoner: StructuredReasoner, private readonly policy: CodeBuddyPolicy) {}
+
+  public async assess(input: SessionFitInput, token: vscode.CancellationToken): Promise<SessionFitResult> {
+    try {
+      const raw = await this.reasoner.requestJson(buildSessionFitRequest(input), token);
+      return normalizeSessionFit(raw, input, this.policy);
+    } catch {
+      return sessionFitFallback(input, this.policy);
     }
   }
 }

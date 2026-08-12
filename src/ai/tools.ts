@@ -5,6 +5,7 @@ import {
   ContextCurationInput,
   ContextMeasurementInput,
   PromptReviewInput,
+  SessionFitInput,
   SessionContextSnapshot,
   TaskDecompositionInput
 } from '../core/contracts';
@@ -13,12 +14,13 @@ import { isMeaningfulPrompt } from '../core/policyEngine';
 import { ContextMeasurementService } from '../providers/contextMeasurement';
 import { createPendingFreshHandoff, handoffMarker } from '../runtime/pendingHandoff';
 import { InterventionPresenter } from '../ui/interventionPresenter';
-import { ContextCurationService, PromptReviewService, TaskDecompositionService } from './services';
+import { ContextCurationService, PromptReviewService, SessionFitService, TaskDecompositionService } from './services';
 
 export const toolNames = {
   promptReviewer: 'code-buddy_reviewPrompt',
   taskDecomposer: 'code-buddy_decomposeTask',
   contextMeasurement: 'code-buddy_measureContext',
+  sessionFit: 'code-buddy_assessSessionFit',
   contextCurator: 'code-buddy_curateContext'
 } as const;
 
@@ -30,6 +32,7 @@ export interface CodeBuddyToolDependencies {
   policy: CodeBuddyPolicy;
   promptReviewer: PromptReviewService;
   taskDecomposer: TaskDecompositionService;
+  sessionFit: SessionFitService;
   contextCurator: ContextCurationService;
   contextMeasurement: ContextMeasurementService;
   presenter: InterventionPresenter;
@@ -188,6 +191,35 @@ class ContextMeasurementTool implements vscode.LanguageModelTool<ContextMeasurem
   }
 }
 
+class SessionFitTool implements vscode.LanguageModelTool<SessionFitInput> {
+  public constructor(private readonly dependencies: CodeBuddyToolDependencies) {}
+
+  public async invoke(options: vscode.LanguageModelToolInvocationOptions<SessionFitInput>, token: vscode.CancellationToken): Promise<vscode.LanguageModelToolResult> {
+    const input = options.input;
+    const result = await this.dependencies.sessionFit.assess(input, token);
+    await this.dependencies.eventLogger().append({
+      eventType: result.status === 'ok' ? 'session.fit_evaluated' : 'tool.failed',
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      data: {
+        invocationSource: 'language_model_tool',
+        toolName: toolNames.sessionFit,
+        newTaskLikelihood: result.newTaskLikelihood,
+        confidence: result.confidence,
+        reason: result.reason,
+        freshTaskRecommended: result.freshTaskRecommended,
+        assessmentSource: result.assessmentSource,
+        failure: result.failure ?? null
+      }
+    });
+    return toolResult(result);
+  }
+
+  public prepareInvocation(): vscode.PreparedToolInvocation {
+    return { invocationMessage: 'Checking whether this task fits the current session…' };
+  }
+}
+
 class ContextCuratorTool implements vscode.LanguageModelTool<ContextCurationInput> {
   public constructor(private readonly dependencies: CodeBuddyToolDependencies) {}
 
@@ -269,6 +301,7 @@ export function registerCodeBuddyTools(context: vscode.ExtensionContext, depende
     vscode.lm.registerTool(toolNames.promptReviewer, new PromptReviewerTool(dependencies)),
     vscode.lm.registerTool(toolNames.taskDecomposer, new TaskDecomposerTool(dependencies)),
     vscode.lm.registerTool(toolNames.contextMeasurement, new ContextMeasurementTool(dependencies)),
+    vscode.lm.registerTool(toolNames.sessionFit, new SessionFitTool(dependencies)),
     vscode.lm.registerTool(toolNames.contextCurator, new ContextCuratorTool(dependencies))
   );
 }

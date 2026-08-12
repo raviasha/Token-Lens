@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { ContextCurationService, PromptReviewService, TaskDecompositionService } from './ai/services';
+import { ContextCurationService, PromptReviewService, SessionFitService, TaskDecompositionService } from './ai/services';
 import { registerCodeBuddyTools } from './ai/tools';
 import { VscodeStructuredReasoner } from './ai/vscodeReasoner';
 import { getCodeBuddyPolicy } from './config';
@@ -78,6 +78,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const reasoner = new VscodeStructuredReasoner();
   const promptReviewer = new PromptReviewService(reasoner, policy);
   const taskDecomposer = new TaskDecompositionService(reasoner, policy);
+  const sessionFit = new SessionFitService(reasoner, policy);
   const contextCurator = new ContextCurationService(reasoner);
   const contextMeasurement = new ContextMeasurementService(policy);
   const presenter = new InterventionPresenter();
@@ -103,6 +104,7 @@ export function activate(context: vscode.ExtensionContext): void {
     policy,
     promptReviewer,
     taskDecomposer,
+    sessionFit,
     contextCurator,
     contextMeasurement,
     presenter,

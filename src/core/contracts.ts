@@ -90,6 +90,26 @@ export interface TaskDecompositionResult {
   failure?: ToolFailure;
 }
 
+export interface SessionFitInput {
+  prompt: string;
+  previousPrompt?: string;
+  sessionId?: string;
+  taskId?: string;
+  relevantContext?: string[];
+}
+
+export interface SessionFitResult {
+  contractVersion: number;
+  kind: 'session_fit';
+  status: 'ok' | 'fallback';
+  newTaskLikelihood: number;
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+  freshTaskRecommended: boolean;
+  assessmentSource: 'codex_model' | 'lexical_fallback';
+  failure?: ToolFailure;
+}
+
 export type ContextMeasurementMethod = 'api' | 'vision' | 'estimate';
 export type ContextThresholdState = 'normal' | 'warning' | 'critical';
 
