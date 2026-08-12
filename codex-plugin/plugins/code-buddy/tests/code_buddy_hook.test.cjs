@@ -8,7 +8,7 @@ const test = require('node:test');
 const pluginRoot = path.join(__dirname, '..');
 const hookPath = path.join(pluginRoot, 'hooks', 'code_buddy_hook.cjs');
 
-function runPluginHook(payload, workspace) {
+function runPluginHook(payload, workspace, environment = {}) {
   const logPath = path.join(workspace, '.code-buddy', 'codex-session.jsonl');
   const result = spawnSync(process.execPath, [hookPath], {
     input: JSON.stringify(payload),
@@ -17,7 +17,8 @@ function runPluginHook(payload, workspace) {
       ...process.env,
       TOKEN_LENS_LOG_FILE: logPath,
       TOKEN_LENS_INTERVENTION_LOG_FILE: path.join(workspace, '.code-buddy', 'interventions.jsonl'),
-      TOKEN_LENS_REDACT_SENSITIVE: 'true'
+      TOKEN_LENS_REDACT_SENSITIVE: 'true',
+      ...environment
     }
   });
   assert.equal(result.status, 0, result.stderr);
@@ -52,6 +53,52 @@ test('injects automatic Code Buddy preflight for a meaningful request', () => {
   const context = output?.hookSpecificOutput?.additionalContext || '';
   assert.match(context, /mcp__code_buddy__review_prompt/);
   assert.match(context, /mcp__code_buddy__decompose_task/);
+  assert.match(context, /mcp__code_buddy__measure_context/);
+  assert.match(context, /mcp__code_buddy__assess_session_fit/);
+  assert.match(context, /Code Buddy:/);
+});
+
+test('requires all four automatic Code Buddy tools before implementation', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-four-checks-'));
+  const environment = { TOKEN_LENS_PREFLIGHT_DENIALS_BEFORE_FALLBACK: '5' };
+  runPluginHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'four-check-session',
+    cwd: workspace,
+    prompt: 'Create a Cursor plugin with a command and tests.'
+  }, workspace, environment);
+
+  const initiallyBlocked = runPluginHook({
+    hook_event_name: 'PreToolUse', session_id: 'four-check-session', cwd: workspace,
+    tool_name: 'apply_patch', tool_use_id: 'edit-1'
+  }, workspace, environment);
+  assert.match(initiallyBlocked.output?.hookSpecificOutput?.permissionDecisionReason || '', /mcp__code_buddy__measure_context/);
+  assert.match(initiallyBlocked.output?.hookSpecificOutput?.permissionDecisionReason || '', /mcp__code_buddy__assess_session_fit/);
+
+  for (const [tool_name, tool_use_id, tool_response] of [
+    ['mcp__code_buddy__review_prompt', 'review-1', { status: 'ok' }],
+    ['mcp__code_buddy__decompose_task', 'decompose-1', { status: 'ok' }]
+  ]) {
+    runPluginHook({ hook_event_name: 'PostToolUse', session_id: 'four-check-session', cwd: workspace, tool_name, tool_use_id, tool_response }, workspace, environment);
+  }
+  const stillBlocked = runPluginHook({
+    hook_event_name: 'PreToolUse', session_id: 'four-check-session', cwd: workspace,
+    tool_name: 'apply_patch', tool_use_id: 'edit-2'
+  }, workspace, environment);
+  assert.match(stillBlocked.output?.hookSpecificOutput?.permissionDecisionReason || '', /mcp__code_buddy__measure_context/);
+
+  for (const [tool_name, tool_use_id, tool_response] of [
+    ['mcp__code_buddy__measure_context', 'context-1', { status: 'fallback' }],
+    ['mcp__code_buddy__assess_session_fit', 'fit-1', { status: 'ok', freshTaskRecommended: false }]
+  ]) {
+    runPluginHook({ hook_event_name: 'PostToolUse', session_id: 'four-check-session', cwd: workspace, tool_name, tool_use_id, tool_response }, workspace, environment);
+  }
+  const allowed = runPluginHook({
+    hook_event_name: 'PreToolUse', session_id: 'four-check-session', cwd: workspace,
+    tool_name: 'apply_patch', tool_use_id: 'edit-3'
+  }, workspace, environment);
+  assert.equal(allowed.output, null);
+  assert.ok(allowed.records.some((record) => record.recordType === 'health.check_limited'));
 });
 
 test('denies every target-session tool while a curated handoff waits', () => {

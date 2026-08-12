@@ -1,6 +1,6 @@
 ---
 name: code-buddy
-description: Use for meaningful coding prompts in Codex when Code Buddy is installed. Run the developer-controlled prompt review and task decomposition before substantial implementation; use its context measurement, curation, local reports, and controlled fallback workflow.
+description: Use for meaningful coding prompts in Codex when Code Buddy is installed. Run the developer-controlled prompt quality, task scope, estimated context pressure, and session-fit checks before substantial implementation.
 ---
 
 # Code Buddy for Codex
@@ -22,7 +22,19 @@ that changes project state:
 3. Prepare a semantic task-complexity assessment, then use the Code Buddy
    `decompose_task` tool with the unchanged user task and that assessment in
    `modelAssessment`.
-4. Read both results. They always preserve an explicit original option.
+4. Call `measure_context` to obtain the best available measurement. Treat
+   empty or fallback evidence as **Estimated Context Pressure — limited
+   evidence**, never as an actual-context zero.
+5. Prepare a semantic session-fit assessment, then call
+   `assess_session_fit` with the unchanged prompt, prior meaningful prompt
+   when available, and `modelAssessment`.
+6. Read all four results. Before substantive work, begin with:
+
+   `Code Buddy: prompt quality <status> · task scope <status> · estimated context pressure <status> · session fit <status>`
+
+   Replace only the affected status with an action such as “enhancement
+   available”, “decomposition available”, “checked — limited evidence”, or
+   “fresh task recommended”.
 
 Small control replies such as `yes`, `continue`, `run it`, `retry`, or `cancel`
 do not require preflight.
@@ -35,7 +47,8 @@ tools are deferred, invoke the missing tool or tools, and then retry.
 
 An evaluation is required; an intervention is conditional.
 
-- If both results do not recommend an intervention, continue normally.
+- If the prompt, scope, context, and session-fit checks are satisfactory,
+  continue normally after the health line.
 - If prompt review recommends an improved prompt, show concise options including
   the original. Do not silently select or submit an alternative.
 - If decomposition is recommended, show the original-task option and the
@@ -45,6 +58,35 @@ An evaluation is required; an intervention is conditional.
   `prompt.review_choice` or `task.decomposition_choice`.
 - If Code Buddy's optional MCP tool fails, preserve the original request and
   continue once the hook's safe-fallback condition has been met.
+- A session-fit recommendation offers **Curate for a fresh chat** or
+  **Continue unchanged**. Never create, switch, or curate a task automatically.
+
+## Project policy
+
+An optional trackable root `code-buddy.yaml` applies to this plugin and the VS
+Code extension. It supports only documented two-space mappings, booleans,
+numbers, and comments; invalid fields fall back individually.
+
+```yaml
+version: 1
+healthCheck:
+  showOnEveryMeaningfulCodingTask: true
+thresholds:
+  promptQuality:
+    enhanceBelow: 75
+  taskScope:
+    decomposeAtOrAbove: 65
+  estimatedContextPressure:
+    capacityTokens: 40000
+    warningAt: 0.70
+    criticalAt: 0.85
+  sessionFit:
+    recommendFreshTaskAtOrAbove: 75
+    fallbackLexicalOverlapBelow: 0.20
+```
+
+Raise `enhanceBelow` to request more prompt enhancement; lower the other
+thresholds for stricter decomposition, pressure, or fresh-task recommendations.
 
 Codex cannot display a PreToolUse approval dialog from a hook. After the hook
 has denied the configured number of implementation attempts, only the developer

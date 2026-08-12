@@ -17,6 +17,7 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Any
+from project_policy import load_project_policy
 
 
 SERVER_NAME = "code-buddy"
@@ -89,6 +90,10 @@ def paths(arguments: dict[str, Any]) -> tuple[Path, Path, Path, Path]:
     workspace = workspace_path(arguments)
     state = workspace / ".code-buddy"
     return workspace, state / "codex-session.jsonl", state / "interventions.jsonl", state
+
+
+def policy_for(arguments: dict[str, Any]) -> dict[str, Any]:
+    return load_project_policy(workspace_path(arguments))["policy"]
 
 
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -192,7 +197,7 @@ PROMPT_DIMENSIONS = {"goalClarity", "scope", "relevantContext", "constraints", "
 CURATION_SECTIONS = {"background", "decision", "constraint", "file", "implementation_state", "completed_work", "remaining_work", "issue", "validation", "open_question", "excluded_history"}
 
 
-def normalize_model_prompt_review(candidate: Any, prompt: str) -> dict[str, Any] | None:
+def normalize_model_prompt_review(candidate: Any, prompt: str, threshold: float) -> dict[str, Any] | None:
     if not isinstance(candidate, dict) or not isinstance(candidate.get("score"), (int, float)):
         return None
     score = max(0, min(100, round(candidate["score"])))
@@ -223,10 +228,10 @@ def normalize_model_prompt_review(candidate: Any, prompt: str) -> dict[str, Any]
         "dimensions": dimensions,
         "reasons": strings(candidate.get("reasons")),
         "issues": issues,
-        "interventionRecommended": bool(candidate.get("interventionRecommended")) or score < 75,
+        "interventionRecommended": bool(candidate.get("interventionRecommended")) or score < threshold,
         "suggestions": strings(candidate.get("suggestions")),
         "options": options[:4],
-        "selectedOptionId": "original" if not (bool(candidate.get("interventionRecommended")) or score < 75) else None,
+        "selectedOptionId": "original" if not (bool(candidate.get("interventionRecommended")) or score < threshold) else None,
         "originalPromptRetained": True,
         "assessmentSource": "codex_model",
     }
@@ -236,7 +241,8 @@ def review_prompt(arguments: dict[str, Any]) -> dict[str, Any]:
     prompt = as_string(arguments.get("prompt"))
     if not prompt:
         raise ValueError("prompt is required.")
-    model_result = normalize_model_prompt_review(arguments.get("modelAssessment"), prompt)
+    threshold = policy_for(arguments)["thresholds"]["promptQuality"]["enhanceBelow"]
+    model_result = normalize_model_prompt_review(arguments.get("modelAssessment"), prompt, threshold)
     if model_result is not None:
         append_intervention(arguments, "prompt.reviewed", {"originalPrompt": prompt, "score": model_result["score"], "interventionRecommended": model_result["interventionRecommended"], "originalPromptRetained": True, "assessmentSource": "codex_model"})
         return model_result
@@ -284,10 +290,10 @@ def review_prompt(arguments: dict[str, Any]) -> dict[str, Any]:
         "dimensions": dimensions,
         "reasons": ["This is a local deterministic review. It never changes the original prompt.", *(suggestions[:2] or ["The prompt contains the main cues needed for a focused implementation."])],
         "issues": issues,
-        "interventionRecommended": score < 75,
+        "interventionRecommended": score < threshold,
         "suggestions": suggestions,
         "options": options,
-        "selectedOptionId": "original" if score >= 75 else None,
+        "selectedOptionId": "original" if score >= threshold else None,
         "originalPromptRetained": True,
         "assessmentSource": "deterministic_fallback",
     }
@@ -295,7 +301,7 @@ def review_prompt(arguments: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def normalize_model_decomposition(candidate: Any, task: str) -> dict[str, Any] | None:
+def normalize_model_decomposition(candidate: Any, task: str, threshold: float) -> dict[str, Any] | None:
     if not isinstance(candidate, dict) or not isinstance(candidate.get("complexityScore"), (int, float)):
         return None
     complexity = max(0, min(100, round(candidate["complexityScore"])))
@@ -310,7 +316,7 @@ def normalize_model_decomposition(candidate: Any, task: str) -> dict[str, Any] |
             steps.append({"id": as_string(step.get("id")) or f"step_{step_index}", "title": as_string(step["title"]), "objective": as_string(step["objective"]), "dependsOn": strings(step.get("dependsOn"), 10), **({"suggestedValidation": as_string(step["suggestedValidation"])} if as_string(step.get("suggestedValidation")) else {})})
         if steps:
             strategies.append({"id": as_string(strategy.get("id")) or f"strategy_{strategy_index}", "label": as_string(strategy["label"]), "rationale": as_string(strategy["rationale"]), "steps": steps})
-    recommended = bool(candidate.get("decompositionRecommended")) or complexity >= 70
+    recommended = bool(candidate.get("decompositionRecommended")) or complexity >= threshold
     if recommended and not strategies:
         return None
     return {
@@ -331,7 +337,8 @@ def decompose_task(arguments: dict[str, Any]) -> dict[str, Any]:
     task = as_string(arguments.get("task"))
     if not task:
         raise ValueError("task is required.")
-    model_result = normalize_model_decomposition(arguments.get("modelAssessment"), task)
+    threshold = policy_for(arguments)["thresholds"]["taskScope"]["decomposeAtOrAbove"]
+    model_result = normalize_model_decomposition(arguments.get("modelAssessment"), task, threshold)
     if model_result is not None:
         append_intervention(arguments, "task.decomposition_evaluated", {"task": task, "complexityScore": model_result["complexityScore"], "decompositionRecommended": model_result["decompositionRecommended"], "originalTaskRetained": True, "assessmentSource": "codex_model"})
         return model_result
@@ -340,7 +347,7 @@ def decompose_task(arguments: dict[str, Any]) -> dict[str, Any]:
     cross_cutting = bool(re.search(r"\b(across|migrate|architecture|refactor|integration|multiple|end.to.end)\b", task, re.I))
     complexity = 25 + min(25, len(actions) * 12) + (20 if len(pieces) > 1 else 0) + (20 if cross_cutting else 0) + (10 if len(task.split()) > 80 else 0)
     complexity = min(100, complexity)
-    recommended = complexity >= 65
+    recommended = complexity >= threshold
     strategy_steps = [
         {"id": "inspect", "title": "Inspect the current implementation", "objective": "Identify the relevant code paths, constraints, and existing validation before changing anything.", "dependsOn": []},
         {"id": "implement", "title": "Implement the requested change", "objective": task, "dependsOn": ["inspect"]},
@@ -372,17 +379,21 @@ def decompose_task(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def estimate_context(arguments: dict[str, Any]) -> dict[str, Any]:
+    thresholds = policy_for(arguments)["thresholds"]["estimatedContextPressure"]
+    capacity_tokens = thresholds["capacityTokens"]
+    warning_at = thresholds["warningAt"]
+    critical_at = thresholds["criticalAt"]
     native = arguments.get("nativeMeasurement")
     if isinstance(native, dict) and isinstance(native.get("value"), (int, float)) and native.get("value", 0) >= 0:
         value = int(native["value"])
-        capacity = max(1, int(native.get("capacity") or DEFAULT_CAPACITY))
+        capacity = max(1, int(native.get("capacity") or capacity_tokens))
         utilization = value / capacity
         result = {
             "contractVersion": CONTRACT_VERSION,
             "kind": "context_measurement",
             "status": "ok",
             "measurement": {"method": "api", "value": value, "unit": "tokens", "utilization": round(utilization, 4), "confidence": native.get("confidence", "high"), "providerId": native.get("providerId", "user-supplied"), "terminology": "Actual Context Utilization"},
-            "recommendation": "curate_or_start_fresh" if utilization >= WARNING_THRESHOLD else "continue",
+            "recommendation": "curate_or_start_fresh" if utilization >= warning_at else "continue",
         }
         append_intervention(arguments, "context.measured", result)
         return result
@@ -393,7 +404,7 @@ def estimate_context(arguments: dict[str, Any]) -> dict[str, Any]:
     estimated = ((latest_snapshot or {}).get("data") or {}).get("estimatedContextPressure") or {}
     if isinstance(estimated.get("value"), (int, float)):
         value = int(estimated["value"])
-        utilization = float(estimated.get("utilization") or value / DEFAULT_CAPACITY)
+        utilization = float(estimated.get("utilization") or value / capacity_tokens)
         confidence = estimated.get("confidence", "low")
     else:
         observed_chars = 0
@@ -401,9 +412,9 @@ def estimate_context(arguments: dict[str, Any]) -> dict[str, Any]:
             context = ((record.get("data") or {}).get("context") or {})
             observed_chars += int(context.get("observedChars") or 0)
         value = (observed_chars + 3) // 4
-        utilization = value / DEFAULT_CAPACITY
+        utilization = value / capacity_tokens
         confidence = "low"
-    threshold = "critical" if utilization >= CRITICAL_THRESHOLD else "warning" if utilization >= WARNING_THRESHOLD else "normal"
+    threshold = "critical" if utilization >= critical_at else "warning" if utilization >= warning_at else "normal"
     result = {
         "contractVersion": CONTRACT_VERSION,
         "kind": "context_measurement",
@@ -413,6 +424,57 @@ def estimate_context(arguments: dict[str, Any]) -> dict[str, Any]:
         "limitation": "Codex does not expose complete active-context usage to this plugin. This is an estimate from observable local events, not a billing value.",
     }
     append_intervention(arguments, "context.measured", result)
+    return result
+
+
+def task_terms(prompt: str) -> set[str]:
+    ignored = {"about", "after", "again", "also", "and", "before", "code", "continue", "current", "existing", "for", "from", "have", "into", "make", "more", "please", "should", "task", "that", "the", "then", "this", "with", "work"}
+    return {term for term in re.findall(r"[a-z0-9_./-]{3,}", prompt.lower()) if term not in ignored}
+
+
+def assess_session_fit(arguments: dict[str, Any]) -> dict[str, Any]:
+    prompt = as_string(arguments.get("prompt"))
+    if not prompt:
+        raise ValueError("prompt is required.")
+    policy = policy_for(arguments)
+    threshold = policy["thresholds"]["sessionFit"]["recommendFreshTaskAtOrAbove"]
+    candidate = arguments.get("modelAssessment")
+    if isinstance(candidate, dict) and isinstance(candidate.get("newTaskLikelihood"), (int, float)) and candidate.get("confidence") in {"high", "medium", "low"} and as_string(candidate.get("reason")):
+        likelihood = max(0, min(100, round(candidate["newTaskLikelihood"])))
+        result = {
+            "contractVersion": CONTRACT_VERSION,
+            "kind": "session_fit",
+            "status": "ok",
+            "newTaskLikelihood": likelihood,
+            "confidence": candidate["confidence"],
+            "reason": as_string(candidate["reason"]),
+            "freshTaskRecommended": likelihood >= threshold,
+            "assessmentSource": "codex_model",
+        }
+    else:
+        previous = as_string(arguments.get("previousPrompt"))
+        if not previous:
+            likelihood, confidence, reason = 0, "low", "No prior meaningful task to compare."
+        elif re.match(r"^(continue|next|now|also|then|build on|following up|same task)\b", prompt, re.I):
+            likelihood, confidence, reason = 0, "high", "The prompt explicitly continues prior work."
+        else:
+            prior_terms, current_terms = task_terms(previous), task_terms(prompt)
+            overlap = len(prior_terms & current_terms) / max(1, min(len(prior_terms), len(current_terms)))
+            is_new = len(prior_terms) >= 2 and len(current_terms) >= 2 and overlap < policy["thresholds"]["sessionFit"]["fallbackLexicalOverlapBelow"]
+            likelihood = 80 if is_new else 0
+            confidence = "high" if overlap < 0.1 else "medium" if overlap < 0.3 else "low"
+            reason = "The prompt has little task-specific overlap with the prior prompt." if is_new else "The prompts retain task-specific overlap."
+        result = {
+            "contractVersion": CONTRACT_VERSION,
+            "kind": "session_fit",
+            "status": "fallback",
+            "newTaskLikelihood": likelihood,
+            "confidence": confidence,
+            "reason": reason,
+            "freshTaskRecommended": likelihood >= threshold,
+            "assessmentSource": "lexical_fallback",
+        }
+    append_intervention(arguments, "session.fit_evaluated", result)
     return result
 
 
@@ -525,6 +587,7 @@ TOOLS = [
     tool("review_prompt", "Evaluate a meaningful coding prompt before implementation. Pass an optional modelAssessment when you have prepared a semantic assessment; Code Buddy validates it, preserves the original prompt, and falls back safely when absent.", ["workspace", "prompt"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "prompt": {"type": "string"}, "relevantContext": {"type": "array", "items": {"type": "string"}}, "modelAssessment": {"type": "object", "description": "Optional Codex semantic review with score, dimensions, reasons, issues, interventionRecommended, suggestions, and options."}}),
     tool("decompose_task", "Assess task complexity and provide an optional, dependency-ordered strategy while preserving the original task option. Pass modelAssessment when a Codex semantic assessment has been prepared.", ["workspace", "task"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "task": {"type": "string"}, "relevantContext": {"type": "array", "items": {"type": "string"}}, "modelAssessment": {"type": "object", "description": "Optional Codex semantic assessment with complexityScore, reasons, decompositionRecommended, and strategies."}}),
     tool("measure_context", "Measure supplied native context usage or honestly estimate pressure from Code Buddy's local Codex event log.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION, "nativeMeasurement": {"type": "object", "properties": {"value": {"type": "number", "minimum": 0}, "capacity": {"type": "number", "minimum": 1}, "confidence": {"type": "string"}, "providerId": {"type": "string"}}, "required": ["value"]}}),
+    tool("assess_session_fit", "Assess whether the current meaningful coding request belongs in this task or merits a developer-controlled fresh-task handoff. It never creates a task automatically.", ["workspace", "prompt"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "prompt": {"type": "string"}, "previousPrompt": {"type": "string"}, "relevantContext": {"type": "array", "items": {"type": "string"}}, "modelAssessment": {"type": "object", "description": "Optional Codex semantic assessment with newTaskLikelihood, confidence, and reason."}}),
     tool("curate_context", "Create a previewable minimum-sufficient handoff only after the developer chooses curation. Set developerConfirmed to true only after the developer chose fresh-task curation; that creates a marked handoff that must be pasted into the fresh task. Pass modelBundle when a Codex semantic curation has been prepared.", ["workspace", "targetTask", "mode"], {"workspace": WORKSPACE, "sessionId": SESSION, "targetTask": {"type": "string"}, "mode": {"type": "string", "enum": ["fresh_task", "continue_current"]}, "developerConfirmed": {"type": "boolean", "description": "True only after the developer explicitly chose fresh-task curation."}, "conversationHistory": {"type": "array", "items": {"type": "string"}}, "knownDecisions": {"type": "array", "items": {"type": "string"}}, "relevantFiles": {"type": "array", "items": {"type": "string"}}, "constraints": {"type": "array", "items": {"type": "string"}}, "implementationState": {"type": "array", "items": {"type": "string"}}, "completedWork": {"type": "array", "items": {"type": "string"}}, "remainingWork": {"type": "array", "items": {"type": "string"}}, "knownIssues": {"type": "array", "items": {"type": "string"}}, "validation": {"type": "array", "items": {"type": "string"}}, "openQuestions": {"type": "array", "items": {"type": "string"}}, "pinnedItems": {"type": "array", "items": {"type": "string"}}, "excludedHistory": {"type": "array", "items": {"type": "string"}}, "modelBundle": {"type": "object", "description": "Optional Codex semantic curation with taskObjective, items, suggestedStartingInstruction, and excludedHistory."}}),
     tool("session_status", "Return local Code Buddy log and report paths for the current workspace.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION}, True),
     tool("record_intervention", "Record the developer's explicit choice or a controlled fallback in the local intervention log.", ["workspace", "eventType", "data"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "eventType": {"type": "string"}, "data": {"type": "object"}}),
@@ -535,6 +598,7 @@ HANDLERS = {
     "review_prompt": review_prompt,
     "decompose_task": decompose_task,
     "measure_context": estimate_context,
+    "assess_session_fit": assess_session_fit,
     "curate_context": curate_context,
     "session_status": session_status,
     "record_intervention": record_intervention,
@@ -561,7 +625,7 @@ def handle(message: dict[str, Any]) -> dict[str, Any] | None:
             "protocolVersion": params.get("protocolVersion", "2025-06-18"),
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-            "instructions": "For each meaningful coding task, call review_prompt and decompose_task before implementation. Preserve the original option, ask before using any alternative or curation, and pass the absolute workspace path.",
+            "instructions": "For each meaningful coding task, call review_prompt, decompose_task, measure_context, and assess_session_fit before implementation. Begin substantive work with the four-part Code Buddy health line, preserve the original option, ask before using any alternative or curation, and pass the absolute workspace path.",
         })
     if method == "ping":
         return result_message(identifier, {})

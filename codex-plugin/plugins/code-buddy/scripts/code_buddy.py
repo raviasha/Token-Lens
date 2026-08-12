@@ -834,12 +834,15 @@ def intervention_metrics(session_id):
         event_type = str(record.get("eventType") or "unknown")
         counts[event_type] = counts.get(event_type, 0) + 1
     choices = [record.get("data") or {} for record in records if record.get("eventType", "").endswith("choice")]
+    latest_health = next((record.get("data") or {} for record in reversed(records)
+                          if record.get("eventType") in {"health.check_completed", "health.check_limited"}), {})
     return {
         "records": records,
         "counts": counts,
         "choices": choices,
         "promptReviews": counts.get("prompt.reviewed", 0),
         "decompositionEvaluations": counts.get("task.decomposition_evaluated", 0),
+        "sessionFitEvaluations": counts.get("session.fit_evaluated", 0),
         "contextWarnings": counts.get("context.warning", 0),
         "curationCompleted": counts.get("context.curation_completed", 0),
         "preflightStarted": counts.get("preflight.started", 0),
@@ -856,7 +859,21 @@ def intervention_metrics(session_id):
             bool((record.get("data") or {}).get("accepted"))
             for record in records if record.get("eventType") == "context.curation_completed"
         ),
+        "healthCategories": latest_health.get("categories") if isinstance(latest_health.get("categories"), dict) else {},
     }
+
+
+def health_status(interventions, category, event_type, detail=None):
+    categories = interventions.get("healthCategories") or {}
+    if category in categories:
+        return str(categories[category])
+    for record in reversed(interventions.get("records") or []):
+        data = record.get("data") or {}
+        if record.get("eventType") == "tool.failed" and detail and data.get("toolName") == detail:
+            return "checked — limited evidence"
+        if record.get("eventType") == event_type:
+            return "satisfactory"
+    return "not recorded"
 
 
 def recommendation(prompt, quality, decomposition, outcome, records, context_turn=None):
@@ -957,6 +974,11 @@ def build_feedback(records, session_id):
     recommendation_data = recommendation(prompt, quality, decomposition, outcome, selected, context_turn)
     observed = observed_size(outcome_data)
     session = session_metrics(selected)
+    interventions = intervention_metrics(session_id)
+    prompt_status = health_status(interventions, "promptReviewer", "prompt.reviewed", "mcp__code_buddy__review_prompt")
+    scope_status = health_status(interventions, "taskDecomposer", "task.decomposition_evaluated", "mcp__code_buddy__decompose_task")
+    context_status = health_status(interventions, "contextMeasurement", "context.measured", "mcp__code_buddy__measure_context")
+    session_fit_status = health_status(interventions, "sessionFit", "session.fit_evaluated", "mcp__code_buddy__assess_session_fit")
     updated = now_iso()
     lines = [
         "# Code Buddy",
@@ -974,11 +996,12 @@ def build_feedback(records, session_id):
     lines.extend([
         "",
         "## Your Performance",
-        f"- Prompt quality: **{quality['score']}/100**",
-        f"- Task decomposition: **{decomposition['score']}/100** ({len(decomposition['steps'])} detected step(s))",
+        f"- Prompt quality: **{quality['score']}/100** ({prompt_status})",
+        f"- Task decomposition: **{decomposition['score']}/100** ({len(decomposition['steps'])} detected step(s); {scope_status})",
         f"- Observed turn size: **{observed}**",
         f"- Worktree delta: **{metrics.get('filesChanged', 0)} file(s)**, **{format_number(metrics.get('linesAdded'))} added / {format_number(metrics.get('linesDeleted'))} deleted lines**",
-        f"- Estimated Context Pressure: **~{format_number(context_turn['contextExposureTokensEstimate'])} estimated tokens** ({context_turn['warning']['thresholdState']})" if context_turn else "- Estimated Context Pressure: **not measured**",
+        f"- Estimated Context Pressure: **~{format_number(context_turn['contextExposureTokensEstimate'])} estimated tokens** ({context_turn['warning']['thresholdState']}; {context_status})" if context_turn else f"- Estimated Context Pressure: **not measured** ({context_status})",
+        f"- Session fit: **{session_fit_status}**",
         "",
         "## Suggested Next Prompt",
         f"> {recommendation_data['template']}",
@@ -1063,6 +1086,7 @@ def build_analytics(records, session_id):
         "|---|---:|",
         f"| Prompt reviews | {interventions['promptReviews']} |",
         f"| Task-decomposition evaluations | {interventions['decompositionEvaluations']} |",
+        f"| Session-fit evaluations | {interventions['sessionFitEvaluations']} |",
         f"| Preflights started / completed | {interventions['preflightStarted']} / {interventions['preflightCompleted']} |",
         f"| Implementation tools denied pending preflight | {interventions['preflightGateDenials']} |",
         f"| Controlled fallback requested / used | {interventions['preflightFallbackRequests']} / {interventions['preflightBypasses']} |",

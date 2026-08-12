@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const childProcess = require('node:child_process');
 const path = require('node:path');
+const { loadProjectPolicy } = require('../scripts/project_policy.cjs');
 
 const sensitiveKeyPattern = /(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential|private[_-]?key)/i;
 const secretPatterns = [
@@ -28,6 +29,18 @@ const taskDecomposerToolNames = new Set([
   'codebuddytaskdecomposer',
   'mcp__code_buddy__decompose_task',
   'mcp__code_buddy__decomposetask'
+]);
+const contextMeasurementToolNames = new Set([
+  'code-buddy_measurecontext',
+  'codebuddycontextmeasurement',
+  'mcp__code_buddy__measure_context',
+  'mcp__code_buddy__measurecontext'
+]);
+const sessionFitToolNames = new Set([
+  'code-buddy_assesssessionfit',
+  'codebuddysessionfit',
+  'mcp__code_buddy__assess_session_fit',
+  'mcp__code_buddy__assesssessionfit'
 ]);
 const codeBuddyToolPattern = /^(?:code-buddy_|codebuddy|mcp__code_buddy__)/i;
 const observationalToolPattern = /^(?:ask(?:_|-)?questions?|fetch|find|file_search|grep|grep_search|get|hover|list|open|read|resolve|search|screenshot|semantic_search|terminal_last_command|terminal_selection|tool_search)(?:$|_|-)/i;
@@ -362,6 +375,18 @@ function isTaskDecomposerTool(toolName) {
     || /(?:^|__)code_buddy__(?:decompose_task|decomposetask)$/.test(normalized);
 }
 
+function isContextMeasurementTool(toolName) {
+  const normalized = normalizeToolName(toolName);
+  return contextMeasurementToolNames.has(normalized)
+    || /(?:^|__)code_buddy__(?:measure_context|measurecontext)$/.test(normalized);
+}
+
+function isSessionFitTool(toolName) {
+  const normalized = normalizeToolName(toolName);
+  return sessionFitToolNames.has(normalized)
+    || /(?:^|__)code_buddy__(?:assess_session_fit|assesssessionfit)$/.test(normalized);
+}
+
 function isCodeBuddyTool(toolName) {
   return codeBuddyToolPattern.test(normalizeToolName(toolName));
 }
@@ -481,12 +506,13 @@ function loadPreflightState(logPath, sessionId) {
   if (!state || state.schemaVersion !== preflightStateSchemaVersion || state.sessionId !== (sessionId || 'unknown')) {
     return null;
   }
-  for (const requirement of ['promptReviewer', 'taskDecomposer']) {
+  for (const requirement of Object.keys(state.requirements || {})) {
     const marker = readJsonIfPresent(getPreflightRequirementPath(logPath, state, requirement));
     if (marker && marker.promptId === state.promptId && (marker.status === 'completed' || marker.status === 'failed')) {
       state.requirements[requirement].status = marker.status;
       state.requirements[requirement].toolName = marker.toolName || null;
       state.requirements[requirement].toolUseId = marker.toolUseId || null;
+      state.requirements[requirement].limited = marker.limited === true;
     }
   }
   return state;
@@ -494,6 +520,7 @@ function loadPreflightState(logPath, sessionId) {
 
 function initializePreflightState(logPath, payload, sessionId, promptId) {
   const prompt = getValue(payload, 'prompt');
+  const policy = loadProjectPolicy(getWorkspace(payload)).policy;
   const state = {
     schemaVersion: preflightStateSchemaVersion,
     sessionId: sessionId || 'unknown',
@@ -509,6 +536,14 @@ function initializePreflightState(logPath, payload, sessionId, promptId) {
       taskDecomposer: {
         required: envBoolean('TOKEN_LENS_TASK_DECOMPOSITION_ENABLED', true),
         status: 'pending'
+      },
+      contextMeasurement: {
+        required: policy.healthCheck.showOnEveryMeaningfulCodingTask,
+        status: 'pending'
+      },
+      sessionFit: {
+        required: policy.healthCheck.showOnEveryMeaningfulCodingTask,
+        status: 'pending'
       }
     },
     denialCount: 0,
@@ -522,6 +557,26 @@ function initializePreflightState(logPath, payload, sessionId, promptId) {
   return state;
 }
 
+function toolResultFromPayload(payload) {
+  const value = getValue(payload, 'tool_response', 'tool_result', 'toolResult');
+  if (value && typeof value === 'object') return value;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function hasLimitedEvidence(payload, status) {
+  if (status === 'failed') return true;
+  const result = toolResultFromPayload(payload);
+  return Boolean(result && typeof result === 'object' && (result.status === 'fallback'
+    || (result.measurement && result.measurement.method === 'estimate' && result.measurement.confidence === 'low')));
+}
+
 function markPreflightRequirement(logPath, state, requirement, status, payload) {
   const marker = {
     schemaVersion: preflightStateSchemaVersion,
@@ -529,6 +584,7 @@ function markPreflightRequirement(logPath, state, requirement, status, payload) 
     promptId: state.promptId,
     requirement,
     status,
+    limited: hasLimitedEvidence(payload, status),
     toolName: getValue(payload, 'tool_name', 'toolName') || null,
     toolUseId: getValue(payload, 'tool_use_id', 'toolUseId') || null,
     timestamp: getTimestamp(payload)
@@ -537,6 +593,7 @@ function markPreflightRequirement(logPath, state, requirement, status, payload) 
   state.requirements[requirement].status = status;
   state.requirements[requirement].toolName = marker.toolName;
   state.requirements[requirement].toolUseId = marker.toolUseId;
+  state.requirements[requirement].limited = marker.limited;
 }
 
 function missingPreflightRequirements(state) {
@@ -683,7 +740,12 @@ function handlePendingHandoffEvent(logPath, payload, eventName) {
 }
 
 function preflightToolLabel(requirement) {
-  return requirement === 'promptReviewer' ? 'mcp__code_buddy__review_prompt' : 'mcp__code_buddy__decompose_task';
+  return {
+    promptReviewer: 'mcp__code_buddy__review_prompt',
+    taskDecomposer: 'mcp__code_buddy__decompose_task',
+    contextMeasurement: 'mcp__code_buddy__measure_context',
+    sessionFit: 'mcp__code_buddy__assess_session_fit'
+  }[requirement] || requirement;
 }
 
 function preflightGateReason(toolName, missing) {
@@ -698,9 +760,9 @@ function automaticPreflightContext(state) {
   return [
     'Code Buddy is enabled for this task.',
     `For this meaningful coding request, invoke ${required.join(' and ')} before substantive implementation.`,
-    'If either MCP tool is deferred, use tool_search to load it before continuing.',
-    'Pass the unchanged user request and a concise semantic modelAssessment to each tool.',
-    'Read both results. Continue silently if neither recommends an intervention; otherwise present choices that include the original request.',
+    'If any MCP tool is deferred, use tool_search to load it before continuing.',
+    'Pass the unchanged user request and a concise semantic modelAssessment to prompt review, task decomposition, and session fit. Measure context from available local evidence.',
+    'Read all four results. Before substantive work, begin exactly: Code Buddy: prompt quality <status> · task scope <status> · estimated context pressure <status> · session fit <status>. Use checked — limited evidence for empty or fallback context estimates.',
     'Do not silently rewrite, submit, curate, or discard the developer request or context.'
   ].join(' ');
 }
@@ -767,6 +829,10 @@ function handlePreflightEvent(logPath, payload, eventName, eventId) {
       requirement = 'promptReviewer';
     } else if (isTaskDecomposerTool(normalizedToolName)) {
       requirement = 'taskDecomposer';
+    } else if (isContextMeasurementTool(normalizedToolName)) {
+      requirement = 'contextMeasurement';
+    } else if (isSessionFitTool(normalizedToolName)) {
+      requirement = 'sessionFit';
     }
 
     if (requirement) {
@@ -781,6 +847,12 @@ function handlePreflightEvent(logPath, payload, eventName, eventId) {
         appendPreflightRecord(logPath, payload, state, 'preflight.completed', {
           completedWithFallback: Object.values(state.requirements).some((value) => value.status === 'failed')
         });
+        const categories = Object.fromEntries(Object.entries(state.requirements).map(([name, value]) => [
+          name,
+          value.status === 'failed' || value.limited ? 'checked — limited evidence' : 'satisfactory'
+        ]));
+        const limited = Object.values(state.requirements).some((value) => value.status === 'failed' || value.limited);
+        appendPreflightRecord(logPath, payload, state, limited ? 'health.check_limited' : 'health.check_completed', { categories });
       }
       return null;
     }
