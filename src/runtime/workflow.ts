@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { ContextCurationInput, ContextMeasurementResult, SessionContextSnapshot } from '../core/contracts';
 import { EventAppendInput } from '../core/eventStore';
@@ -5,6 +6,7 @@ import { ContextMeasurementService } from '../providers/contextMeasurement';
 import { InterventionPresenter } from '../ui/interventionPresenter';
 import { ContextCurationService, PromptReviewService, TaskDecompositionService } from '../ai/services';
 import { renderHandoffPayload } from '../ai/tools';
+import { createPendingFreshHandoff, handoffMarker } from './pendingHandoff';
 
 export interface WorkflowDependencies {
   promptReviewer: PromptReviewService;
@@ -14,6 +16,7 @@ export interface WorkflowDependencies {
   presenter: InterventionPresenter;
   currentSnapshot(): Promise<SessionContextSnapshot | undefined>;
   curationHistory(): Promise<string[]>;
+  currentLogPath(): string;
   appendEvent(input: EventAppendInput): Promise<unknown>;
 }
 
@@ -145,8 +148,26 @@ export class CodeBuddyWorkflow {
         conversationHistory: history
       }, cancellation.token);
       bundle = await this.dependencies.presenter.presentCuratedBundle(bundle, destination);
+      let pendingHandoffId: string | undefined;
       if (bundle.accepted) {
-        await vscode.env.clipboard.writeText(renderHandoffPayload(bundle));
+        const snapshot = await this.dependencies.currentSnapshot();
+        const sourceSessionId = snapshot?.sessionId ?? 'unknown';
+        const pending = mode === 'fresh_task'
+          ? await createPendingFreshHandoff(
+            path.join(path.dirname(this.dependencies.currentLogPath()), '.state'),
+            sourceSessionId,
+            task
+          )
+          : undefined;
+        pendingHandoffId = pending?.handoffId;
+        await vscode.env.clipboard.writeText(renderHandoffPayload(bundle, pending && handoffMarker(pending.handoffId)));
+        if (pending) {
+          await this.dependencies.appendEvent({
+            eventType: 'context.handoff_pending',
+            sessionId: sourceSessionId,
+            data: { handoffId: pending.handoffId, targetTask: task }
+          });
+        }
         await vscode.window.showInformationMessage(destination === 'current_chat'
           ? 'Curated context copied. Paste it into this new chat when ready.'
           : 'Curated handoff copied. Start a fresh chat and paste it when ready.');
@@ -161,6 +182,7 @@ export class CodeBuddyWorkflow {
           handoffDestination: destination,
           curationOffered: true,
           accepted: bundle.accepted,
+          handoffId: pendingHandoffId ?? null,
           itemCount: bundle.items.length,
           pinnedItemCount: bundle.items.filter((item) => item.pinned).length,
           excludedHistoryCount: bundle.excludedHistory.length,

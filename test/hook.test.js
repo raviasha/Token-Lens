@@ -32,6 +32,18 @@ function runHook(payload, environment = {}, existingDirectory = null) {
   return { directory, records, output };
 }
 
+function writePendingHandoff(stateDirectory, handoff = {}) {
+  fs.mkdirSync(stateDirectory, { recursive: true });
+  fs.writeFileSync(path.join(stateDirectory, 'pending-fresh-handoff.json'), JSON.stringify({
+    schemaVersion: 1,
+    handoffId: 'handoff-1',
+    sourceSessionId: 'source-session',
+    targetTask: 'Implement the requested command.',
+    createdAt: '2026-08-12T00:00:00.000Z',
+    ...handoff
+  }), 'utf8');
+}
+
 test('writes structured events and redacts sensitive fields', () => {
   const { records } = runHook({
     hook_event_name: 'UserPromptSubmit',
@@ -230,6 +242,121 @@ test('control replies bypass semantic preflight enforcement', () => {
   }, {}, directory);
   assert.equal(allowed.output, null);
   assert.ok(allowed.records.some((record) => record.recordType === 'preflight.skipped'));
+});
+
+test('blocks every target-session tool until the marked handoff is pasted', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-handoff-waiting-'));
+  const stateDirectory = path.join(directory, '.state');
+  const environment = { TOKEN_LENS_STATE_DIR: stateDirectory };
+  writePendingHandoff(stateDirectory);
+
+  const submitted = runHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'target-session',
+    cwd: directory,
+    prompt: 'Implement the requested command.'
+  }, environment, directory);
+  assert.match(submitted.output?.hookSpecificOutput?.additionalContext || '', /paste.*handoff|continue without curated context/i);
+
+  const deniedRead = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'target-session',
+    cwd: directory,
+    tool_name: 'read_file',
+    tool_use_id: 'read-while-waiting'
+  }, environment, directory);
+  assert.equal(deniedRead.output?.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.ok(deniedRead.records.some((record) => record.recordType === 'context.handoff_waiting'));
+});
+
+test('releases a target session after the marked handoff is pasted', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-handoff-pasted-'));
+  const stateDirectory = path.join(directory, '.state');
+  const environment = { TOKEN_LENS_STATE_DIR: stateDirectory };
+  writePendingHandoff(stateDirectory);
+
+  const pasted = runHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'target-session',
+    cwd: directory,
+    prompt: '<!-- code-buddy-handoff:handoff-1 -->\n[CONTEXT HANDOFF]\n\nTask objective: Implement the requested command.'
+  }, environment, directory);
+  assert.equal(pasted.output, null);
+  assert.equal(fs.existsSync(path.join(stateDirectory, 'pending-fresh-handoff.json')), false);
+  assert.ok(pasted.records.some((record) => record.recordType === 'context.handoff_pasted'));
+  assert.ok(pasted.records.some((record) => record.recordType === 'preflight.started'));
+});
+
+test('releases a target session after the explicit no-context continuation', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-handoff-bypassed-'));
+  const stateDirectory = path.join(directory, '.state');
+  const environment = { TOKEN_LENS_STATE_DIR: stateDirectory };
+  writePendingHandoff(stateDirectory);
+
+  const bypassed = runHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'target-session',
+    cwd: directory,
+    prompt: 'Code Buddy: continue without curated context'
+  }, environment, directory);
+  assert.equal(bypassed.output, null);
+  assert.equal(fs.existsSync(path.join(stateDirectory, 'pending-fresh-handoff.json')), false);
+  assert.ok(bypassed.records.some((record) => record.recordType === 'context.handoff_bypassed'));
+  assert.ok(bypassed.records.some((record) => record.recordType === 'preflight.started'));
+});
+
+test('does not accept a non-exact no-context continuation', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-handoff-inexact-'));
+  const stateDirectory = path.join(directory, '.state');
+  const environment = { TOKEN_LENS_STATE_DIR: stateDirectory };
+  writePendingHandoff(stateDirectory);
+
+  const submitted = runHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'target-session',
+    cwd: directory,
+    prompt: 'Code Buddy: continue without curated context!'
+  }, environment, directory);
+  assert.match(submitted.output?.hookSpecificOutput?.additionalContext || '', /paste.*handoff|continue without curated context/i);
+  assert.equal(fs.existsSync(path.join(stateDirectory, 'pending-fresh-handoff.json')), true);
+});
+
+test('fails open when pending handoff state is malformed and cannot be removed', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-handoff-malformed-'));
+  const stateDirectory = path.join(directory, '.state');
+  fs.mkdirSync(path.join(stateDirectory, 'pending-fresh-handoff.json'), { recursive: true });
+  const submitted = runHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'target-session',
+    cwd: directory,
+    prompt: 'Implement the requested command.'
+  }, { TOKEN_LENS_STATE_DIR: stateDirectory }, directory);
+
+  assert.ok(submitted.records.some((record) => record.recordType === 'context.handoff_invalid'));
+  assert.ok(submitted.records.some((record) => record.recordType === 'preflight.started'));
+});
+
+test('does not block the source session that created the handoff', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-handoff-source-'));
+  const stateDirectory = path.join(directory, '.state');
+  const environment = { TOKEN_LENS_STATE_DIR: stateDirectory };
+  writePendingHandoff(stateDirectory);
+
+  runHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'source-session',
+    cwd: directory,
+    prompt: 'Continue the current implementation work.'
+  }, environment, directory);
+  const observational = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'source-session',
+    cwd: directory,
+    tool_name: 'read_file',
+    tool_use_id: 'source-read'
+  }, environment, directory);
+  assert.equal(observational.output, null);
+  assert.equal(fs.existsSync(path.join(stateDirectory, 'pending-fresh-handoff.json')), true);
 });
 
 test('captures transformed prompt context and provider usage when supplied', () => {

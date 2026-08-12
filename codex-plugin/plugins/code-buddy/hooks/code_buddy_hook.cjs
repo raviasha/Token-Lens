@@ -19,13 +19,17 @@ const preflightStateSchemaVersion = 1;
 const pendingHandoffSchemaVersion = 1;
 const promptReviewerToolNames = new Set([
   'code-buddy_reviewprompt',
-  'codebuddypromptreviewer'
+  'codebuddypromptreviewer',
+  'mcp__code_buddy__review_prompt',
+  'mcp__code_buddy__reviewprompt'
 ]);
 const taskDecomposerToolNames = new Set([
   'code-buddy_decomposetask',
-  'codebuddytaskdecomposer'
+  'codebuddytaskdecomposer',
+  'mcp__code_buddy__decompose_task',
+  'mcp__code_buddy__decomposetask'
 ]);
-const codeBuddyToolPattern = /^(?:code-buddy_|codebuddy)/i;
+const codeBuddyToolPattern = /^(?:code-buddy_|codebuddy|mcp__code_buddy__)/i;
 const observationalToolPattern = /^(?:ask(?:_|-)?questions?|fetch|find|file_search|grep|grep_search|get|hover|list|open|read|resolve|search|screenshot|semantic_search|terminal_last_command|terminal_selection|tool_search)(?:$|_|-)/i;
 
 function envBoolean(name, fallback) {
@@ -144,6 +148,25 @@ function getWorkspace(payload) {
   return typeof workspace === 'string' ? workspace : process.cwd();
 }
 
+function getLogPath(payload) {
+  const configured = process.env.TOKEN_LENS_LOG_FILE;
+  return configured || path.join(getWorkspace(payload), '.code-buddy', 'codex-session.jsonl');
+}
+
+function getInterventionLogPath(logPath) {
+  return process.env.TOKEN_LENS_INTERVENTION_LOG_FILE || path.join(path.dirname(logPath), 'interventions.jsonl');
+}
+
+function getAnalyticsScriptPath() {
+  if (process.env.TOKEN_LENS_ANALYTICS_SCRIPT) {
+    return process.env.TOKEN_LENS_ANALYTICS_SCRIPT;
+  }
+  if (process.env.PLUGIN_ROOT) {
+    return path.join(process.env.PLUGIN_ROOT, 'scripts', 'code_buddy.py');
+  }
+  return null;
+}
+
 function getTurnId(payload) {
   const turnId = getValue(payload, 'turn_id', 'turnId');
   return turnId === undefined || turnId === null ? null : String(turnId);
@@ -255,7 +278,7 @@ function hookContextMetrics(eventName, payload) {
   const prompt = getValue(payload, 'prompt');
   const transformedPrompt = getValue(payload, 'transformedPrompt', 'transformed_prompt');
   const toolInput = getValue(payload, 'tool_input', 'toolArgs');
-  const toolResult = getValue(payload, 'tool_result', 'toolResult');
+  const toolResult = getValue(payload, 'tool_response', 'tool_result', 'toolResult');
   const error = getValue(payload, 'error');
 
   switch (eventName) {
@@ -293,6 +316,12 @@ function hookContextMetrics(eventName, payload) {
         role: 'assistant_output',
         modelFacingValue: getValue(payload, 'last_assistant_message', 'response')
       });
+    case 'Stop':
+    case 'agentStop':
+      return createContextMetrics({ response: getValue(payload, 'last_assistant_message', 'response') }, {
+        role: 'assistant_output',
+        modelFacingValue: getValue(payload, 'last_assistant_message', 'response')
+      });
     case 'PreCompact':
     case 'preCompact':
       return createContextMetrics({ customInstructions: getValue(payload, 'custom_instructions', 'customInstructions') }, {
@@ -322,11 +351,15 @@ function normalizeToolName(value) {
 }
 
 function isPromptReviewerTool(toolName) {
-  return promptReviewerToolNames.has(normalizeToolName(toolName));
+  const normalized = normalizeToolName(toolName);
+  return promptReviewerToolNames.has(normalized)
+    || /(?:^|__)code_buddy__(?:review_prompt|reviewprompt)$/.test(normalized);
 }
 
 function isTaskDecomposerTool(toolName) {
-  return taskDecomposerToolNames.has(normalizeToolName(toolName));
+  const normalized = normalizeToolName(toolName);
+  return taskDecomposerToolNames.has(normalized)
+    || /(?:^|__)code_buddy__(?:decompose_task|decomposetask)$/.test(normalized);
 }
 
 function isCodeBuddyTool(toolName) {
@@ -353,6 +386,11 @@ function isMeaningfulPrompt(prompt) {
     return false;
   }
   return normalized.split(/\s+/).length >= 3 || normalized.length >= 20;
+}
+
+function isControlledFallbackApproval(prompt) {
+  return typeof prompt === 'string'
+    && /^\s*code\s*buddy\s*:\s*(?:continue|proceed)\s+without\s+preflight\s*[.!]?\s*$/i.test(prompt);
 }
 
 function preflightStateDirectory(logPath) {
@@ -534,7 +572,7 @@ function appendPreflightRecord(logPath, payload, state, recordType, data = {}) {
     data: recordData
   });
 
-  const interventionPath = process.env.TOKEN_LENS_INTERVENTION_LOG_FILE;
+  const interventionPath = getInterventionLogPath(logPath);
   if (interventionPath) {
     appendRecord(interventionPath, {
       schemaVersion: 1,
@@ -568,18 +606,16 @@ function appendHandoffRecord(logPath, payload, recordType, data = {}) {
     model: getValue(payload, 'model') || null,
     data: recordData
   });
-  const interventionPath = process.env.TOKEN_LENS_INTERVENTION_LOG_FILE;
-  if (interventionPath) {
-    appendRecord(interventionPath, {
-      schemaVersion: 1,
-      eventId: createEventId('intervention', { recordType, sessionId, timestamp, data: recordData }),
-      timestamp,
-      eventType: recordType,
-      sessionId,
-      taskId: getTurnId(payload),
-      data: recordData
-    });
-  }
+  appendRecord(getInterventionLogPath(logPath), {
+    schemaVersion: 1,
+    eventId: createEventId('intervention', { recordType, sessionId, timestamp, data: recordData }),
+    timestamp,
+    eventType: recordType,
+    sessionId,
+    taskId: getTurnId(payload),
+    workspace: getWorkspace(payload),
+    data: recordData
+  });
 }
 
 function handlePendingHandoffEvent(logPath, payload, eventName) {
@@ -593,10 +629,10 @@ function handlePendingHandoffEvent(logPath, payload, eventName) {
       clearPendingHandoff(logPath);
       appendHandoffRecord(logPath, payload, 'context.handoff_invalid', { reason: 'malformed_pending_handoff' });
     }
-    return { waiting: false, output: null };
+    return { waiting: false, resolved: false, output: null };
   }
   if (pending.sourceSessionId === sessionId) {
-    return { waiting: false, output: null };
+    return { waiting: false, resolved: false, output: null };
   }
 
   if (isUserPrompt) {
@@ -604,17 +640,18 @@ function handlePendingHandoffEvent(logPath, payload, eventName) {
     if (hasHandoffMarker(prompt, pending.handoffId)) {
       clearPendingHandoff(logPath);
       appendHandoffRecord(logPath, payload, 'context.handoff_pasted', { handoffId: pending.handoffId, targetTask: pending.targetTask });
-      return { waiting: false, output: null };
+      return { waiting: false, resolved: true, output: null };
     }
     if (isHandoffBypassPrompt(prompt)) {
       clearPendingHandoff(logPath);
       appendHandoffRecord(logPath, payload, 'context.handoff_bypassed', { handoffId: pending.handoffId, targetTask: pending.targetTask });
-      return { waiting: false, output: null };
+      return { waiting: false, resolved: true, output: null };
     }
     const message = 'A Code Buddy curated handoff is waiting for this fresh task. Do not plan, inspect files, run tools, or begin implementation. Ask the developer to either paste the handoff containing its Code Buddy marker or submit exactly `Code Buddy: continue without curated context`.';
     appendHandoffRecord(logPath, payload, 'context.handoff_waiting', { handoffId: pending.handoffId, targetTask: pending.targetTask });
     return {
       waiting: true,
+      resolved: false,
       output: {
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
@@ -630,6 +667,7 @@ function handlePendingHandoffEvent(logPath, payload, eventName) {
     appendHandoffRecord(logPath, payload, 'context.handoff_waiting', { handoffId: pending.handoffId, targetTask: pending.targetTask, toolName });
     return {
       waiting: true,
+      resolved: false,
       output: {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
@@ -641,11 +679,11 @@ function handlePendingHandoffEvent(logPath, payload, eventName) {
     };
   }
 
-  return { waiting: false, output: null };
+  return { waiting: false, resolved: false, output: null };
 }
 
 function preflightToolLabel(requirement) {
-  return requirement === 'promptReviewer' ? 'code-buddy_reviewPrompt' : 'code-buddy_decomposeTask';
+  return requirement === 'promptReviewer' ? 'mcp__code_buddy__review_prompt' : 'mcp__code_buddy__decompose_task';
 }
 
 function preflightGateReason(toolName, missing) {
@@ -655,6 +693,18 @@ function preflightGateReason(toolName, missing) {
     + 'Do not retry implementation before those evaluations finish.';
 }
 
+function automaticPreflightContext(state) {
+  const required = missingPreflightRequirements(state).map(preflightToolLabel);
+  return [
+    'Code Buddy is enabled for this task.',
+    `For this meaningful coding request, invoke ${required.join(' and ')} before substantive implementation.`,
+    'If either MCP tool is deferred, use tool_search to load it before continuing.',
+    'Pass the unchanged user request and a concise semantic modelAssessment to each tool.',
+    'Read both results. Continue silently if neither recommends an intervention; otherwise present choices that include the original request.',
+    'Do not silently rewrite, submit, curate, or discard the developer request or context.'
+  ].join(' ');
+}
+
 function handlePreflightEvent(logPath, payload, eventName, eventId) {
   if (!envBoolean('TOKEN_LENS_PREFLIGHT_ENFORCE', true)) {
     return null;
@@ -662,6 +712,25 @@ function handlePreflightEvent(logPath, payload, eventName, eventId) {
 
   const sessionId = getSessionId(payload) || 'unknown';
   if (eventName === 'UserPromptSubmit' || eventName === 'userPromptSubmitted') {
+    if (isControlledFallbackApproval(getValue(payload, 'prompt'))) {
+      const activeState = loadPreflightState(logPath, sessionId);
+      if (activeState && activeState.meaningful && missingPreflightRequirements(activeState).length) {
+        activeState.bypassed = true;
+        activeState.fallbackPendingToolUseId = null;
+        activeState.fallbackPendingToolName = null;
+        savePreflightState(logPath, activeState);
+        appendPreflightRecord(logPath, payload, activeState, 'preflight.bypassed', {
+          reason: 'developer_approved_controlled_fallback',
+          approvalPrompt: 'Code Buddy: continue without preflight'
+        });
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'UserPromptSubmit',
+            additionalContext: 'The developer explicitly approved Code Buddy\'s controlled fail-open path. Continue with the original task and keep the approval in the local intervention log.'
+          }
+        };
+      }
+    }
     const state = initializePreflightState(logPath, payload, sessionId, eventId);
     appendPreflightRecord(
       logPath,
@@ -670,7 +739,15 @@ function handlePreflightEvent(logPath, payload, eventName, eventId) {
       state.meaningful ? 'preflight.started' : 'preflight.skipped',
       state.meaningful ? {} : { reason: 'control_or_non_meaningful_prompt' }
     );
-    return null;
+    if (!state.meaningful || !missingPreflightRequirements(state).length) {
+      return null;
+    }
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: automaticPreflightContext(state)
+      }
+    };
   }
 
   const state = loadPreflightState(logPath, sessionId);
@@ -756,7 +833,7 @@ function handlePreflightEvent(logPath, payload, eventName, eventId) {
   }
 
   const fallbackReason = `Code Buddy preflight is still incomplete (${missing.map(preflightToolLabel).join(', ')}). `
-    + 'Approve only if you want to continue with the original task under the controlled fail-open path.';
+    + 'Codex hooks cannot open an approval dialog from PreToolUse. To use the controlled fail-open path, submit exactly: `Code Buddy: continue without preflight`.';
   state.fallbackPendingToolUseId = toolUseId || null;
   state.fallbackPendingToolName = normalizedToolName;
   savePreflightState(logPath, state);
@@ -769,9 +846,152 @@ function handlePreflightEvent(logPath, payload, eventName, eventId) {
   return {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
-      permissionDecision: 'ask',
+      permissionDecision: 'deny',
       permissionDecisionReason: fallbackReason,
       additionalContext: fallbackReason
+    }
+  };
+}
+
+const ignoredTaskWords = new Set([
+  'about', 'after', 'again', 'also', 'and', 'before', 'code', 'continue', 'current', 'existing', 'for', 'from',
+  'have', 'into', 'make', 'more', 'please', 'should', 'task', 'that', 'the', 'then', 'this', 'with', 'work'
+]);
+
+function readHookRecords(logPath) {
+  try {
+    return fs.readFileSync(logPath, 'utf8')
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          const record = JSON.parse(line);
+          return record && record.schemaVersion === 2 ? [record] : [];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+function taskTerms(prompt) {
+  return new Set(
+    (String(prompt || '').toLowerCase().match(/[a-z0-9_.\\/-]{3,}/g) || [])
+      .filter((term) => !ignoredTaskWords.has(term))
+  );
+}
+
+function evaluateTaskBoundary(previousPrompt, currentPrompt) {
+  if (/^(continue|next|now|also|then|build on|following up|same task)\b/i.test(currentPrompt.trim())) {
+    return { isLikelyNewTask: false, confidence: 'high', overlap: 1, reason: 'The prompt explicitly continues prior work.' };
+  }
+  const previous = taskTerms(previousPrompt);
+  const current = taskTerms(currentPrompt);
+  const shared = [...current].filter((term) => previous.has(term)).length;
+  const overlap = shared / Math.max(1, Math.min(previous.size, current.size));
+  const isLikelyNewTask = previous.size >= 2 && current.size >= 2 && overlap < 0.2;
+  return {
+    isLikelyNewTask,
+    confidence: overlap < 0.1 ? 'high' : overlap < 0.3 ? 'medium' : 'low',
+    overlap: Number(overlap.toFixed(2)),
+    reason: isLikelyNewTask
+      ? 'The new prompt has little task-specific overlap with the prior prompt.'
+      : 'The prompts retain task-specific overlap.'
+  };
+}
+
+function appendGovernanceIntervention(logPath, payload, eventType, data) {
+  const timestamp = getTimestamp(payload);
+  const recordData = redact(data);
+  appendRecord(getInterventionLogPath(logPath), {
+    schemaVersion: 1,
+    eventId: createEventId('intervention', { eventType, sessionId: getSessionId(payload), timestamp, data: recordData }),
+    timestamp,
+    eventType,
+    sessionId: getSessionId(payload) || 'unknown',
+    taskId: getTurnId(payload),
+    workspace: getWorkspace(payload),
+    data: recordData
+  });
+}
+
+function governanceContext(logPath, payload, eventName, eventId) {
+  if (eventName !== 'UserPromptSubmit' && eventName !== 'userPromptSubmitted') {
+    return null;
+  }
+  const currentPrompt = getValue(payload, 'prompt');
+  const sessionId = getSessionId(payload) || 'unknown';
+  if (!isMeaningfulPrompt(currentPrompt) || isControlledFallbackApproval(currentPrompt)) {
+    return null;
+  }
+
+  const records = readHookRecords(logPath);
+  const priorPrompts = records
+    .filter((record) => record.recordType === 'user.prompt' && record.eventId !== eventId && isMeaningfulPrompt(record.data?.prompt))
+    .slice(-20);
+  const previous = priorPrompts.at(-1);
+  const messages = [];
+
+  if (previous) {
+    const previousPrompt = previous.data?.prompt;
+    const previousSession = previous.sessionId || 'unknown';
+    if (previousSession !== 'unknown' && sessionId !== 'unknown' && previousSession !== sessionId) {
+      const data = {
+        previousSessionId: previousSession,
+        currentSessionId: sessionId,
+        reason: 'The first meaningful prompt is in a different Codex session and prior Code Buddy context exists.'
+      };
+      appendGovernanceIntervention(logPath, payload, 'session.boundary_detected', data);
+      messages.push('Code Buddy detected a fresh Codex session with prior local context. Before implementation, offer the developer: (1) carry forward a curated handoff, or (2) start without prior context. Only call curate_context after they choose the handoff.');
+    } else if (previousSession === sessionId && typeof previousPrompt === 'string') {
+      const boundary = evaluateTaskBoundary(previousPrompt, currentPrompt);
+      appendGovernanceIntervention(logPath, payload, 'task.boundary_evaluated', boundary);
+      if (boundary.isLikelyNewTask) {
+        messages.push(`Code Buddy detected a likely new task in this session (task-term overlap ${boundary.overlap}). Before implementation, offer the developer: (1) curate a handoff for a fresh task, or (2) continue unchanged. Do not curate automatically.`);
+      }
+    }
+  }
+
+  const snapshot = [...records].reverse().find((record) => record.recordType === 'context.load_snapshot' && record.sessionId === sessionId);
+  const pressure = snapshot?.data?.estimatedContextPressure;
+  if (pressure && ['warning', 'critical'].includes(pressure.thresholdState)) {
+    appendGovernanceIntervention(logPath, payload, 'context.warning', {
+      thresholdState: pressure.thresholdState,
+      value: pressure.value,
+      unit: pressure.unit,
+      utilization: pressure.utilization
+    });
+    messages.push(`Code Buddy's prior local snapshot reports ${pressure.thresholdState} Estimated Context Pressure. Call measure_context before discussing it, then offer fresh-task curation, current-task curation, or continuing unchanged. Never claim this estimate is actual context utilization.`);
+  }
+
+  if (!messages.length) {
+    return null;
+  }
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: messages.join('\n\n')
+    }
+  };
+}
+
+function mergeHookOutput(first, second) {
+  if (!first) {
+    return second;
+  }
+  if (!second) {
+    return first;
+  }
+  const firstSpecific = first.hookSpecificOutput || {};
+  const secondSpecific = second.hookSpecificOutput || {};
+  return {
+    ...first,
+    hookSpecificOutput: {
+      ...firstSpecific,
+      ...secondSpecific,
+      additionalContext: [firstSpecific.additionalContext, secondSpecific.additionalContext].filter(Boolean).join('\n\n') || undefined
     }
   };
 }
@@ -809,7 +1029,7 @@ function normalizeHookType(eventName) {
 function normalizeHookData(eventName, payload) {
   const toolName = getValue(payload, 'tool_name', 'toolName');
   const toolInput = getValue(payload, 'tool_input', 'toolArgs');
-  const toolResult = getValue(payload, 'tool_result', 'toolResult');
+  const toolResult = getValue(payload, 'tool_response', 'tool_result', 'toolResult');
   const transcriptPath = getValue(payload, 'transcript_path', 'transcriptPath');
 
   switch (eventName) {
@@ -853,7 +1073,8 @@ function normalizeHookData(eventName, payload) {
       return redact({
         transcriptPath,
         stopReason: getValue(payload, 'stop_reason', 'stopReason'),
-        stopHookActive: getValue(payload, 'stop_hook_active', 'stopHookActive')
+        stopHookActive: getValue(payload, 'stop_hook_active', 'stopHookActive'),
+        response: getValue(payload, 'last_assistant_message', 'response')
       });
     case 'SubagentStart':
     case 'subagentStart':
@@ -1131,7 +1352,7 @@ function captureTranscript(logPath, payload, eventName, sessionId) {
 }
 
 function runCodeBuddy(action, payload, sessionId, eventId) {
-  const scriptPath = process.env.TOKEN_LENS_ANALYTICS_SCRIPT;
+  const scriptPath = getAnalyticsScriptPath();
   if (!scriptPath) {
     return;
   }
@@ -1147,7 +1368,11 @@ function runCodeBuddy(action, payload, sessionId, eventId) {
     TOKEN_LENS_ANALYTICS_ACTION: action,
     TOKEN_LENS_SESSION_ID: sessionId || 'unknown',
     TOKEN_LENS_EVENT_ID: eventId || '',
-    TOKEN_LENS_WORKSPACE: getWorkspace(payload)
+    TOKEN_LENS_WORKSPACE: getWorkspace(payload),
+    TOKEN_LENS_LOG_FILE: getLogPath(payload),
+    TOKEN_LENS_INTERVENTION_LOG_FILE: getInterventionLogPath(getLogPath(payload)),
+    TOKEN_LENS_FEEDBACK_FILE: process.env.TOKEN_LENS_FEEDBACK_FILE || path.join(getWorkspace(payload), 'Code Buddy.md'),
+    TOKEN_LENS_ANALYTICS_FILE: process.env.TOKEN_LENS_ANALYTICS_FILE || path.join(getWorkspace(payload), 'Code Buddy Analytics.md')
   };
 
   for (const candidate of candidates) {
@@ -1180,15 +1405,16 @@ function main(input) {
   const payload = parseInput(input);
   const event = getEventName(payload);
   const sessionId = getSessionId(payload);
-  const logPath = process.env.TOKEN_LENS_LOG_FILE;
-
-  if (!logPath) {
-    throw new Error('TOKEN_LENS_LOG_FILE is not configured.');
-  }
+  const logPath = getLogPath(payload);
 
   const eventId = appendHookRecord(logPath, payload, event, sessionId);
   const handoff = handlePendingHandoffEvent(logPath, payload, event);
-  const hookOutput = handoff.waiting ? handoff.output : handlePreflightEvent(logPath, payload, event, eventId);
+  const hookOutput = handoff.waiting
+    ? handoff.output
+    : mergeHookOutput(
+      handlePreflightEvent(logPath, payload, event, eventId),
+      handoff.resolved ? null : governanceContext(logPath, payload, event, eventId)
+    );
 
   if (event === 'UserPromptSubmit' || event === 'userPromptSubmitted') {
     runCodeBuddy('start_turn', payload, sessionId, eventId);
