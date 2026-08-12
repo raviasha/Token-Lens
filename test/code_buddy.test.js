@@ -73,6 +73,20 @@ test('generates deterministic Code Buddy reports from a completed turn', { skip:
     eventType: 'prompt.reviewed',
     sessionId: 'analytics-session',
     data: { score: 85, originalPromptRetained: true }
+  })}\n${JSON.stringify({
+    schemaVersion: 1,
+    eventId: 'session-fit-1',
+    timestamp: '2026-08-08T00:00:01.750Z',
+    eventType: 'session.fit_evaluated',
+    sessionId: 'analytics-session',
+    data: { newTaskLikelihood: 20, freshTaskRecommended: false, assessmentSource: 'codex_model' }
+  })}\n${JSON.stringify({
+    schemaVersion: 1,
+    eventId: 'health-limited-1',
+    timestamp: '2026-08-08T00:00:01.900Z',
+    eventType: 'health.check_limited',
+    sessionId: 'analytics-session',
+    data: { categories: { contextMeasurement: 'checked — limited evidence' } }
   })}\n`, 'utf8');
 
   runHook({
@@ -112,11 +126,14 @@ test('generates deterministic Code Buddy reports from a completed turn', { skip:
   assert.match(fs.readFileSync(feedbackPath, 'utf8'), /# Code Buddy/);
   assert.match(fs.readFileSync(feedbackPath, 'utf8'), /Prompt quality:/);
   assert.match(fs.readFileSync(feedbackPath, 'utf8'), /Estimated Context Pressure:/);
+  assert.match(fs.readFileSync(feedbackPath, 'utf8'), /Session fit:/);
+  assert.match(fs.readFileSync(feedbackPath, 'utf8'), /limited evidence/i);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /## Changed Files/);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /## Latest Turn Context/);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /## Context By Turn/);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /## Code Buddy Interventions/);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /\| Prompt reviews \| 1 \|/);
+  assert.match(fs.readFileSync(analyticsPath, 'utf8'), /\| Session-fit evaluations \| 1 \|/);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /\| Preflights started \/ completed \| 1 \/ 0 \|/);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /app\.js/);
 });

@@ -6,11 +6,12 @@ const path = require('node:path');
 const test = require('node:test');
 
 const informationChoices = [];
+let nextInformationChoice = 'Carry forward curated context';
 const vscodeMock = {
   window: {
     showInformationMessage: async (...args) => {
       informationChoices.push(args);
-      return 'Carry forward curated context';
+      return nextInformationChoice;
     },
     showWarningMessage: async () => 'Continue unchanged'
   }
@@ -33,6 +34,7 @@ async function writeSessionLog(records) {
 
 test('a new session offers prior-context carry-forward for the first meaningful prompt', async () => {
   informationChoices.length = 0;
+  nextInformationChoice = 'Carry forward curated context';
   const logPath = await writeSessionLog([
     {
       schemaVersion: 2,
@@ -85,4 +87,66 @@ test('a new session offers prior-context carry-forward for the first meaningful 
   assert.equal(events[0].data.previousSessionId, 'session-1');
   assert.equal(events[0].data.currentSessionId, 'session-2');
   assert.equal(events[1].data.selectedAction, 'Carry forward curated context');
+});
+
+test('a completed semantic session-fit result offers a developer-controlled fresh-task choice', async () => {
+  informationChoices.length = 0;
+  nextInformationChoice = 'Curate for a fresh chat';
+  const logPath = await writeSessionLog([
+    {
+      schemaVersion: 2,
+      eventId: 'prior-prompt',
+      recordType: 'user.prompt',
+      sessionId: 'session-1',
+      timestamp: '2026-08-11T00:00:00Z',
+      data: { prompt: 'Implement authentication token refresh handling.' }
+    },
+    {
+      schemaVersion: 2,
+      eventId: 'current-prompt',
+      recordType: 'user.prompt',
+      sessionId: 'session-1',
+      timestamp: '2026-08-11T00:01:00Z',
+      data: { prompt: 'Add an authentication export endpoint.' }
+    },
+    {
+      schemaVersion: 2,
+      eventId: 'session-fit',
+      recordType: 'tool.completed',
+      sessionId: 'session-1',
+      timestamp: '2026-08-11T00:01:01Z',
+      data: {
+        toolName: 'code-buddy_assessSessionFit',
+        toolResult: { status: 'ok', newTaskLikelihood: 82, confidence: 'high', freshTaskRecommended: true, reason: 'Separate export subsystem.' }
+      }
+    }
+  ]);
+  const events = [];
+  const curationCalls = [];
+  const governance = new DeterministicGovernance({
+    policy: DEFAULT_POLICY,
+    currentLogPath: () => logPath,
+    appendEvent: async (event) => events.push(event),
+    workflow: {
+      curate: async (...args) => {
+        curationCalls.push(args);
+        return true;
+      },
+      measureContext: async () => {
+        throw new Error('The fresh-task choice should suppress a simultaneous context warning.');
+      }
+    }
+  });
+
+  await governance.process();
+
+  assert.equal(informationChoices.length, 1);
+  assert.match(informationChoices[0][0], /new task/i);
+  assert.deepEqual(curationCalls, [[
+    'Add an authentication export endpoint.',
+    'fresh_task'
+  ]]);
+  const evaluation = events.find((event) => event.eventType === 'task.boundary_evaluated');
+  assert.equal(evaluation.data.assessmentSource, 'session_fit');
+  assert.equal(evaluation.data.newTaskLikelihood, 82);
 });

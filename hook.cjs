@@ -25,6 +25,14 @@ const taskDecomposerToolNames = new Set([
   'code-buddy_decomposetask',
   'codebuddytaskdecomposer'
 ]);
+const contextMeasurementToolNames = new Set([
+  'code-buddy_measurecontext',
+  'codebuddycontextmeasurement'
+]);
+const sessionFitToolNames = new Set([
+  'code-buddy_assesssessionfit',
+  'codebuddysessionfit'
+]);
 const codeBuddyToolPattern = /^(?:code-buddy_|codebuddy)/i;
 const observationalToolPattern = /^(?:ask(?:_|-)?questions?|fetch|find|file_search|grep|grep_search|get|hover|list|open|read|resolve|search|screenshot|semantic_search|terminal_last_command|terminal_selection|tool_search)(?:$|_|-)/i;
 
@@ -329,6 +337,14 @@ function isTaskDecomposerTool(toolName) {
   return taskDecomposerToolNames.has(normalizeToolName(toolName));
 }
 
+function isContextMeasurementTool(toolName) {
+  return contextMeasurementToolNames.has(normalizeToolName(toolName));
+}
+
+function isSessionFitTool(toolName) {
+  return sessionFitToolNames.has(normalizeToolName(toolName));
+}
+
 function isCodeBuddyTool(toolName) {
   return codeBuddyToolPattern.test(normalizeToolName(toolName));
 }
@@ -443,12 +459,13 @@ function loadPreflightState(logPath, sessionId) {
   if (!state || state.schemaVersion !== preflightStateSchemaVersion || state.sessionId !== (sessionId || 'unknown')) {
     return null;
   }
-  for (const requirement of ['promptReviewer', 'taskDecomposer']) {
+  for (const requirement of Object.keys(state.requirements || {})) {
     const marker = readJsonIfPresent(getPreflightRequirementPath(logPath, state, requirement));
     if (marker && marker.promptId === state.promptId && (marker.status === 'completed' || marker.status === 'failed')) {
       state.requirements[requirement].status = marker.status;
       state.requirements[requirement].toolName = marker.toolName || null;
       state.requirements[requirement].toolUseId = marker.toolUseId || null;
+      state.requirements[requirement].limited = marker.limited === true;
     }
   }
   return state;
@@ -471,6 +488,14 @@ function initializePreflightState(logPath, payload, sessionId, promptId) {
       taskDecomposer: {
         required: envBoolean('TOKEN_LENS_TASK_DECOMPOSITION_ENABLED', true),
         status: 'pending'
+      },
+      contextMeasurement: {
+        required: envBoolean('TOKEN_LENS_HEALTH_CHECK_VISIBLE', true),
+        status: 'pending'
+      },
+      sessionFit: {
+        required: envBoolean('TOKEN_LENS_HEALTH_CHECK_VISIBLE', true),
+        status: 'pending'
       }
     },
     denialCount: 0,
@@ -484,6 +509,33 @@ function initializePreflightState(logPath, payload, sessionId, promptId) {
   return state;
 }
 
+function toolResultFromPayload(payload) {
+  const value = getValue(payload, 'tool_result', 'toolResult');
+  if (value && typeof value === 'object') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function hasLimitedEvidence(payload, status) {
+  if (status === 'failed') {
+    return true;
+  }
+  const result = toolResultFromPayload(payload);
+  if (!result || typeof result !== 'object') {
+    return false;
+  }
+  return result.status === 'fallback'
+    || (result.measurement && result.measurement.method === 'estimate' && result.measurement.confidence === 'low');
+}
+
 function markPreflightRequirement(logPath, state, requirement, status, payload) {
   const marker = {
     schemaVersion: preflightStateSchemaVersion,
@@ -491,6 +543,7 @@ function markPreflightRequirement(logPath, state, requirement, status, payload) 
     promptId: state.promptId,
     requirement,
     status,
+    limited: hasLimitedEvidence(payload, status),
     toolName: getValue(payload, 'tool_name', 'toolName') || null,
     toolUseId: getValue(payload, 'tool_use_id', 'toolUseId') || null,
     timestamp: getTimestamp(payload)
@@ -499,6 +552,7 @@ function markPreflightRequirement(logPath, state, requirement, status, payload) 
   state.requirements[requirement].status = status;
   state.requirements[requirement].toolName = marker.toolName;
   state.requirements[requirement].toolUseId = marker.toolUseId;
+  state.requirements[requirement].limited = marker.limited;
 }
 
 function missingPreflightRequirements(state) {
@@ -645,7 +699,12 @@ function handlePendingHandoffEvent(logPath, payload, eventName) {
 }
 
 function preflightToolLabel(requirement) {
-  return requirement === 'promptReviewer' ? 'code-buddy_reviewPrompt' : 'code-buddy_decomposeTask';
+  return {
+    promptReviewer: 'code-buddy_reviewPrompt',
+    taskDecomposer: 'code-buddy_decomposeTask',
+    contextMeasurement: 'code-buddy_measureContext',
+    sessionFit: 'code-buddy_assessSessionFit'
+  }[requirement] || requirement;
 }
 
 function preflightGateReason(toolName, missing) {
@@ -690,6 +749,10 @@ function handlePreflightEvent(logPath, payload, eventName, eventId) {
       requirement = 'promptReviewer';
     } else if (isTaskDecomposerTool(normalizedToolName)) {
       requirement = 'taskDecomposer';
+    } else if (isContextMeasurementTool(normalizedToolName)) {
+      requirement = 'contextMeasurement';
+    } else if (isSessionFitTool(normalizedToolName)) {
+      requirement = 'sessionFit';
     }
 
     if (requirement) {
@@ -704,6 +767,12 @@ function handlePreflightEvent(logPath, payload, eventName, eventId) {
         appendPreflightRecord(logPath, payload, state, 'preflight.completed', {
           completedWithFallback: Object.values(state.requirements).some((value) => value.status === 'failed')
         });
+        const categories = Object.fromEntries(Object.entries(state.requirements).map(([name, value]) => [
+          name,
+          value.status === 'failed' || value.limited ? 'checked — limited evidence' : 'satisfactory'
+        ]));
+        const hasLimited = Object.values(state.requirements).some((value) => value.status === 'failed' || value.limited);
+        appendPreflightRecord(logPath, payload, state, hasLimited ? 'health.check_limited' : 'health.check_completed', { categories });
       }
       return null;
     }

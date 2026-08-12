@@ -8,6 +8,7 @@ import {
   mergeCodeBuddyAgentInstructions,
   removeCodeBuddyAgentInstructions
 } from './agentInstructions';
+import { getCodeBuddyPolicy } from './config';
 
 export const hookConfigRelativePath = path.join('.github', 'hooks', 'token-lens.json');
 export const agentInstructionsRelativePath = path.join('.github', 'copilot-instructions.md');
@@ -37,6 +38,8 @@ export interface HookSettings {
   contextOfferCurationOnNewTask: boolean;
   promptReviewEnabled: boolean;
   taskDecompositionEnabled: boolean;
+  sessionFitThreshold: number;
+  healthCheckVisible: boolean;
   preflightEnforceBeforeImplementation: boolean;
   preflightDenialsBeforeFallback: number;
 }
@@ -119,14 +122,17 @@ function getSettings(root: vscode.Uri): HookSettings & { logPath: string; feedba
   );
   const pythonCommand = configuration.get<string>('pythonCommand', '');
   const interventionLogFile = configuration.get<string>('interventionLogFile', defaultInterventionLogFile);
-  const contextEstimatedCapacityTokens = Math.max(1_000, Math.round(configuration.get<number>('context.estimatedContextCapacityTokens', 40_000)));
-  const contextWarningThreshold = Math.min(1, Math.max(0, configuration.get<number>('context.warningThreshold', 0.70)));
-  const contextCriticalThreshold = Math.min(1, Math.max(contextWarningThreshold, configuration.get<number>('context.criticalThreshold', 0.85)));
-  const contextAllowVisionVerification = configuration.get<boolean>('context.allowVisionVerification', true);
-  const contextOfferCurationOnNewSession = configuration.get<boolean>('context.offerCurationOnNewSession', true);
-  const contextOfferCurationOnNewTask = configuration.get<boolean>('context.offerCurationOnNewTask', true);
-  const promptReviewEnabled = configuration.get<boolean>('promptReview.enabled', true);
-  const taskDecompositionEnabled = configuration.get<boolean>('taskDecomposition.enabled', true);
+  const policy = getCodeBuddyPolicy(root);
+  const contextEstimatedCapacityTokens = policy.context.estimatedContextCapacityTokens;
+  const contextWarningThreshold = policy.context.warningThreshold;
+  const contextCriticalThreshold = policy.context.criticalThreshold;
+  const contextAllowVisionVerification = policy.context.allowVisionVerification;
+  const contextOfferCurationOnNewSession = policy.context.offerCurationOnNewSession;
+  const contextOfferCurationOnNewTask = policy.context.offerCurationOnNewTask;
+  const promptReviewEnabled = policy.promptReview.enabled;
+  const taskDecompositionEnabled = policy.taskDecomposition.enabled;
+  const sessionFitThreshold = policy.sessionFit.recommendFreshTaskAtOrAbove;
+  const healthCheckVisible = policy.healthCheck.showOnEveryMeaningfulCodingTask;
   const preflightEnforceBeforeImplementation = configuration.get<boolean>('preflight.enforceBeforeImplementation', true);
   const preflightDenialsBeforeFallback = Math.min(
     5,
@@ -152,6 +158,8 @@ function getSettings(root: vscode.Uri): HookSettings & { logPath: string; feedba
     contextOfferCurationOnNewTask,
     promptReviewEnabled,
     taskDecompositionEnabled,
+    sessionFitThreshold,
+    healthCheckVisible,
     preflightEnforceBeforeImplementation,
     preflightDenialsBeforeFallback,
     logPath: resolveLogPath(root, logFile),
@@ -236,6 +244,8 @@ function createHookEntry(
       TOKEN_LENS_CONTEXT_OFFER_CURATION_ON_NEW_TASK: String(settings.contextOfferCurationOnNewTask),
       TOKEN_LENS_PROMPT_REVIEW_ENABLED: String(settings.promptReviewEnabled),
       TOKEN_LENS_TASK_DECOMPOSITION_ENABLED: String(settings.taskDecompositionEnabled),
+      TOKEN_LENS_SESSION_FIT_THRESHOLD: String(settings.sessionFitThreshold),
+      TOKEN_LENS_HEALTH_CHECK_VISIBLE: String(settings.healthCheckVisible),
       TOKEN_LENS_PREFLIGHT_ENFORCE: String(settings.preflightEnforceBeforeImplementation),
       TOKEN_LENS_PREFLIGHT_DENIALS_BEFORE_FALLBACK: String(settings.preflightDenialsBeforeFallback)
     },

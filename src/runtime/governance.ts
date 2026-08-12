@@ -16,6 +16,38 @@ export interface GovernanceDependencies {
 const processedBoundaryPromptIdsKey = 'codeBuddy.processedBoundaryPromptIds';
 const processedBoundarySessionIdsKey = 'codeBuddy.processedBoundarySessionIds';
 
+function semanticSessionFit(records: Awaited<ReturnType<typeof readHookRecords>>, sessionId: string): {
+  newTaskLikelihood: number;
+  confidence: string;
+  reason: string;
+  freshTaskRecommended: boolean;
+} | undefined {
+  for (const record of [...records].reverse()) {
+    if (String(record.sessionId ?? 'unknown') !== sessionId || record.recordType !== 'tool.completed') {
+      continue;
+    }
+    const data = record.data ?? {};
+    if (data.toolName !== 'code-buddy_assessSessionFit') {
+      continue;
+    }
+    const result = data.toolResult;
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+      continue;
+    }
+    const value = result as Record<string, unknown>;
+    if (typeof value.newTaskLikelihood !== 'number' || typeof value.freshTaskRecommended !== 'boolean') {
+      continue;
+    }
+    return {
+      newTaskLikelihood: value.newTaskLikelihood,
+      confidence: typeof value.confidence === 'string' ? value.confidence : 'low',
+      reason: typeof value.reason === 'string' ? value.reason : 'Code Buddy completed a semantic session-fit check.',
+      freshTaskRecommended: value.freshTaskRecommended
+    };
+  }
+  return undefined;
+}
+
 export class DeterministicGovernance {
   private readonly processedPromptIds = new Set<string>();
   private readonly processedSessionIds = new Set<string>();
@@ -141,6 +173,7 @@ export class DeterministicGovernance {
         const previous = prompts.at(-2);
         if (previous) {
           const boundary = detectCurationBoundary(previous, current);
+          const sessionFit = semanticSessionFit(records, current.sessionId);
           if (boundary.kind === 'new_session' && this.dependencies.policy.context.offerCurationOnNewSession) {
             boundaryOffered = true;
             await this.dependencies.appendEvent({
@@ -171,14 +204,23 @@ export class DeterministicGovernance {
             if (action === 'Carry forward curated context') {
               await this.dependencies.workflow.curate(current.prompt, 'fresh_task', 'current_chat');
             }
-          } else if (boundary.taskBoundary && this.dependencies.policy.context.offerCurationOnNewTask) {
-            const taskBoundary = boundary.taskBoundary;
+          } else if ((boundary.taskBoundary || sessionFit) && this.dependencies.policy.context.offerCurationOnNewTask) {
+            const taskBoundary = sessionFit
+              ? {
+                isLikelyNewTask: sessionFit.freshTaskRecommended,
+                confidence: sessionFit.confidence,
+                overlap: boundary.taskBoundary?.overlap ?? 0,
+                reason: sessionFit.reason,
+                newTaskLikelihood: sessionFit.newTaskLikelihood,
+                assessmentSource: 'session_fit'
+              }
+              : { ...boundary.taskBoundary!, assessmentSource: 'lexical_fallback' };
             await this.dependencies.appendEvent({
               eventType: 'task.boundary_evaluated',
               sessionId: current.sessionId,
               data: { promptEventId: current.eventId, ...taskBoundary }
             });
-            if (boundary.kind === 'new_task') {
+            if (taskBoundary.isLikelyNewTask) {
               boundaryOffered = true;
               const action = await vscode.window.showInformationMessage(
                 'This looks like a new task. Code Buddy can create fresh task-specific context from only the relevant prior work.',

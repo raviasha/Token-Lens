@@ -68,11 +68,11 @@ test('writes structured events and redacts sensitive fields', () => {
   assert.ok(records.some((record) => record.recordType === 'preflight.started'));
 });
 
-test('preflight gate redirects implementation until both semantic tools complete', () => {
+test('preflight gate redirects implementation until all four Code Buddy checks complete', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-preflight-'));
   const environment = {
     TOKEN_LENS_PREFLIGHT_ENFORCE: 'true',
-    TOKEN_LENS_PREFLIGHT_DENIALS_BEFORE_FALLBACK: '1',
+    TOKEN_LENS_PREFLIGHT_DENIALS_BEFORE_FALLBACK: '5',
     TOKEN_LENS_INTERVENTION_LOG_FILE: path.join(directory, 'interventions.jsonl')
   };
 
@@ -103,6 +103,8 @@ test('preflight gate redirects implementation until both semantic tools complete
   assert.equal(blocked.output.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(blocked.output.hookSpecificOutput.permissionDecisionReason, /code-buddy_reviewPrompt/);
   assert.match(blocked.output.hookSpecificOutput.permissionDecisionReason, /code-buddy_decomposeTask/);
+  assert.match(blocked.output.hookSpecificOutput.permissionDecisionReason, /code-buddy_measureContext/);
+  assert.match(blocked.output.hookSpecificOutput.permissionDecisionReason, /code-buddy_assessSessionFit/);
 
   const reviewerStart = runHook({
     hook_event_name: 'PreToolUse',
@@ -128,6 +130,32 @@ test('preflight gate redirects implementation until both semantic tools complete
     tool_result: { status: 'ok' }
   }, environment, directory);
 
+  const stillBlocked = runHook({
+    hook_event_name: 'PreToolUse',
+    session_id: 'preflight-session',
+    tool_name: 'replace_string_in_file',
+    tool_use_id: 'edit-2',
+    tool_input: { filePath: 'src/input.ts' }
+  }, environment, directory);
+  assert.equal(stillBlocked.output.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(stillBlocked.output.hookSpecificOutput.permissionDecisionReason, /code-buddy_measureContext/);
+  assert.match(stillBlocked.output.hookSpecificOutput.permissionDecisionReason, /code-buddy_assessSessionFit/);
+
+  runHook({
+    hook_event_name: 'PostToolUse',
+    session_id: 'preflight-session',
+    tool_name: 'code-buddy_measureContext',
+    tool_use_id: 'context-1',
+    tool_result: { status: 'fallback' }
+  }, environment, directory);
+  runHook({
+    hook_event_name: 'PostToolUse',
+    session_id: 'preflight-session',
+    tool_name: 'code-buddy_assessSessionFit',
+    tool_use_id: 'fit-1',
+    tool_result: { status: 'ok', freshTaskRecommended: false }
+  }, environment, directory);
+
   const allowed = runHook({
     hook_event_name: 'PreToolUse',
     session_id: 'preflight-session',
@@ -137,6 +165,9 @@ test('preflight gate redirects implementation until both semantic tools complete
   }, environment, directory);
   assert.equal(allowed.output, null);
   assert.ok(allowed.records.some((record) => record.recordType === 'preflight.completed'));
+  const health = allowed.records.findLast((record) => record.recordType === 'health.check_limited');
+  assert.ok(health);
+  assert.deepEqual(Object.keys(health.data.categories).sort(), ['contextMeasurement', 'promptReviewer', 'sessionFit', 'taskDecomposer']);
 
   const interventions = fs.readFileSync(environment.TOKEN_LENS_INTERVENTION_LOG_FILE, 'utf8')
     .trim()
@@ -214,6 +245,20 @@ test('semantic tool failures satisfy preflight through the safe fallback contrac
     tool_name: 'code-buddy_decomposeTask',
     tool_use_id: 'decompose-ok',
     tool_result: { status: 'fallback' }
+  }, environment, directory);
+  runHook({
+    hook_event_name: 'PostToolUse',
+    session_id: 'failure-session',
+    tool_name: 'code-buddy_measureContext',
+    tool_use_id: 'context-fallback',
+    tool_result: { status: 'fallback' }
+  }, environment, directory);
+  runHook({
+    hook_event_name: 'PostToolUseFailure',
+    session_id: 'failure-session',
+    tool_name: 'code-buddy_assessSessionFit',
+    tool_use_id: 'fit-failed',
+    error: 'Model unavailable'
   }, environment, directory);
   const allowed = runHook({
     hook_event_name: 'PreToolUse',
