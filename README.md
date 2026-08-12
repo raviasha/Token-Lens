@@ -20,6 +20,20 @@ Download the latest release from the [Code Buddy v0.8.2 release page](https://gi
 
 The v0.8.2 SHA-256 value published in the checksum file must match the downloaded VSIX.
 
+### Codex plugin
+
+The downloadable Codex marketplace is in [codex-plugin](codex-plugin). After
+cloning or downloading this repository, run:
+
+```bash
+codex plugin marketplace add /absolute/path/to/Token_Lens/codex-plugin
+codex plugin add code-buddy@token-lens
+```
+
+Restart Codex, create a new task, and trust the Code Buddy hook when prompted.
+The persistent **Plugins → Code Buddy → Enable/Disable** setting controls
+whether Code Buddy runs in future tasks.
+
 ## Requirements
 
 - VS Code 1.95 or newer.
