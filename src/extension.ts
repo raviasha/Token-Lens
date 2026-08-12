@@ -95,6 +95,7 @@ export function activate(context: vscode.ExtensionContext): void {
     presenter,
     currentSnapshot,
     curationHistory,
+    currentLogPath: getCurrentLogPath,
     appendEvent: (input) => eventLogger().append(input)
   });
 
@@ -107,7 +108,8 @@ export function activate(context: vscode.ExtensionContext): void {
     presenter,
     eventLogger,
     currentSnapshot,
-    curationHistory
+    curationHistory,
+    currentLogPath: getCurrentLogPath
   });
   new DeterministicGovernance({
     policy,

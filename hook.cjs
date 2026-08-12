@@ -16,6 +16,7 @@ const secretPatterns = [
 ];
 const contextEstimateCharactersPerToken = 4;
 const preflightStateSchemaVersion = 1;
+const pendingHandoffSchemaVersion = 1;
 const promptReviewerToolNames = new Set([
   'code-buddy_reviewprompt',
   'codebuddypromptreviewer'
@@ -397,6 +398,41 @@ function readJsonIfPresent(filePath) {
   }
 }
 
+function pendingHandoffPath(logPath) {
+  const stateDirectory = process.env.TOKEN_LENS_STATE_DIR || path.join(path.dirname(logPath), '.state');
+  return path.join(stateDirectory, 'pending-fresh-handoff.json');
+}
+
+function loadPendingHandoff(logPath) {
+  const filePath = pendingHandoffPath(logPath);
+  const pending = readJsonIfPresent(filePath);
+  if (!pending) {
+    return { pending: null, malformed: fs.existsSync(filePath) };
+  }
+  const valid = pending.schemaVersion === pendingHandoffSchemaVersion
+    && typeof pending.handoffId === 'string' && pending.handoffId
+    && typeof pending.sourceSessionId === 'string' && pending.sourceSessionId
+    && typeof pending.targetTask === 'string' && pending.targetTask;
+  return { pending: valid ? pending : null, malformed: !valid };
+}
+
+function clearPendingHandoff(logPath) {
+  try {
+    fs.unlinkSync(pendingHandoffPath(logPath));
+    return true;
+  } catch (error) {
+    return Boolean(error && error.code === 'ENOENT');
+  }
+}
+
+function isHandoffBypassPrompt(prompt) {
+  return String(prompt || '') === 'Code Buddy: continue without curated context';
+}
+
+function hasHandoffMarker(prompt, handoffId) {
+  return String(prompt || '').includes(`<!-- code-buddy-handoff:${handoffId} -->`);
+}
+
 function savePreflightState(logPath, state) {
   state.updatedAt = new Date().toISOString();
   writeJsonAtomic(getPreflightStatePath(logPath, state.sessionId), state);
@@ -510,6 +546,102 @@ function appendPreflightRecord(logPath, payload, state, recordType, data = {}) {
       data: recordData
     });
   }
+}
+
+function appendHandoffRecord(logPath, payload, recordType, data = {}) {
+  const timestamp = getTimestamp(payload);
+  const sessionId = getSessionId(payload) || 'unknown';
+  const recordData = redact(data);
+  appendRecord(logPath, {
+    schemaVersion: 2,
+    eventId: createEventId('handoff', { recordType, sessionId, timestamp, data: recordData }),
+    recordType,
+    source: 'governance',
+    sourceEventType: getEventName(payload),
+    sessionId,
+    turnId: getTurnId(payload),
+    parentId: null,
+    timestamp,
+    localTimestamp: getLocalTimestamp(timestamp),
+    recordedAt: getLocalTimestamp(),
+    workspace: getWorkspace(payload),
+    model: getValue(payload, 'model') || null,
+    data: recordData
+  });
+  const interventionPath = process.env.TOKEN_LENS_INTERVENTION_LOG_FILE;
+  if (interventionPath) {
+    appendRecord(interventionPath, {
+      schemaVersion: 1,
+      eventId: createEventId('intervention', { recordType, sessionId, timestamp, data: recordData }),
+      timestamp,
+      eventType: recordType,
+      sessionId,
+      taskId: getTurnId(payload),
+      data: recordData
+    });
+  }
+}
+
+function handlePendingHandoffEvent(logPath, payload, eventName) {
+  const { pending, malformed } = loadPendingHandoff(logPath);
+  const sessionId = getSessionId(payload) || 'unknown';
+  const isUserPrompt = eventName === 'UserPromptSubmit' || eventName === 'userPromptSubmitted';
+  const isPreToolUse = eventName === 'PreToolUse' || eventName === 'preToolUse';
+
+  if (!pending) {
+    if (malformed && isUserPrompt) {
+      clearPendingHandoff(logPath);
+      appendHandoffRecord(logPath, payload, 'context.handoff_invalid', { reason: 'malformed_pending_handoff' });
+    }
+    return { waiting: false, output: null };
+  }
+  if (pending.sourceSessionId === sessionId) {
+    return { waiting: false, output: null };
+  }
+
+  if (isUserPrompt) {
+    const prompt = getValue(payload, 'prompt');
+    if (hasHandoffMarker(prompt, pending.handoffId)) {
+      clearPendingHandoff(logPath);
+      appendHandoffRecord(logPath, payload, 'context.handoff_pasted', { handoffId: pending.handoffId, targetTask: pending.targetTask });
+      return { waiting: false, output: null };
+    }
+    if (isHandoffBypassPrompt(prompt)) {
+      clearPendingHandoff(logPath);
+      appendHandoffRecord(logPath, payload, 'context.handoff_bypassed', { handoffId: pending.handoffId, targetTask: pending.targetTask });
+      return { waiting: false, output: null };
+    }
+    const message = 'A Code Buddy curated handoff is waiting for this fresh task. Do not plan, inspect files, run tools, or begin implementation. Ask the developer to either paste the handoff containing its Code Buddy marker or submit exactly `Code Buddy: continue without curated context`.';
+    appendHandoffRecord(logPath, payload, 'context.handoff_waiting', { handoffId: pending.handoffId, targetTask: pending.targetTask });
+    return {
+      waiting: true,
+      output: {
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext: message
+        }
+      }
+    };
+  }
+
+  if (isPreToolUse) {
+    const toolName = getValue(payload, 'tool_name', 'toolName') || 'this tool';
+    const message = `Code Buddy blocked ${toolName} because this fresh task is waiting for curated context. Paste the marked handoff or submit exactly \`Code Buddy: continue without curated context\` before using any tool.`;
+    appendHandoffRecord(logPath, payload, 'context.handoff_waiting', { handoffId: pending.handoffId, targetTask: pending.targetTask, toolName });
+    return {
+      waiting: true,
+      output: {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: message,
+          additionalContext: message
+        }
+      }
+    };
+  }
+
+  return { waiting: false, output: null };
 }
 
 function preflightToolLabel(requirement) {
@@ -1055,7 +1187,8 @@ function main(input) {
   }
 
   const eventId = appendHookRecord(logPath, payload, event, sessionId);
-  const hookOutput = handlePreflightEvent(logPath, payload, event, eventId);
+  const handoff = handlePendingHandoffEvent(logPath, payload, event);
+  const hookOutput = handoff.waiting ? handoff.output : handlePreflightEvent(logPath, payload, event, eventId);
 
   if (event === 'UserPromptSubmit' || event === 'userPromptSubmitted') {
     runCodeBuddy('start_turn', payload, sessionId, eventId);

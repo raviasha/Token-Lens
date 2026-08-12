@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   CodeBuddyPolicy,
@@ -10,6 +11,7 @@ import {
 import { EventAppendInput } from '../core/eventStore';
 import { isMeaningfulPrompt } from '../core/policyEngine';
 import { ContextMeasurementService } from '../providers/contextMeasurement';
+import { createPendingFreshHandoff, handoffMarker } from '../runtime/pendingHandoff';
 import { InterventionPresenter } from '../ui/interventionPresenter';
 import { ContextCurationService, PromptReviewService, TaskDecompositionService } from './services';
 
@@ -34,6 +36,7 @@ export interface CodeBuddyToolDependencies {
   eventLogger(): ToolEventLogger;
   currentSnapshot(): Promise<SessionContextSnapshot | undefined>;
   curationHistory(): Promise<string[]>;
+  currentLogPath(): string;
 }
 
 function toolResult(value: unknown): vscode.LanguageModelToolResult {
@@ -197,8 +200,26 @@ class ContextCuratorTool implements vscode.LanguageModelTool<ContextCurationInpu
     };
     let result = await this.dependencies.contextCurator.curate(input, token);
     result = await this.dependencies.presenter.presentCuratedBundle(result);
+    let pendingHandoffId: string | undefined;
     if (result.accepted) {
-      await vscode.env.clipboard.writeText(renderHandoffPayload(result));
+      const snapshot = await this.dependencies.currentSnapshot();
+      const sourceSessionId = input.sessionId ?? snapshot?.sessionId ?? 'unknown';
+      const pending = input.mode === 'fresh_task'
+        ? await createPendingFreshHandoff(
+          path.join(path.dirname(this.dependencies.currentLogPath()), '.state'),
+          sourceSessionId,
+          input.targetTask
+        )
+        : undefined;
+      pendingHandoffId = pending?.handoffId;
+      await vscode.env.clipboard.writeText(renderHandoffPayload(result, pending && handoffMarker(pending.handoffId)));
+      if (pending) {
+        await this.dependencies.eventLogger().append({
+          eventType: 'context.handoff_pending',
+          sessionId: sourceSessionId,
+          data: { handoffId: pending.handoffId, targetTask: input.targetTask }
+        });
+      }
     }
     await this.dependencies.eventLogger().append({
       eventType: result.status === 'ok' ? 'context.curation_completed' : 'tool.failed',
@@ -210,6 +231,7 @@ class ContextCuratorTool implements vscode.LanguageModelTool<ContextCurationInpu
         mode: input.mode,
         curationOffered: true,
         accepted: result.accepted,
+        handoffId: pendingHandoffId ?? null,
         itemCount: result.items.length,
         pinnedItemCount: result.items.filter((item) => item.pinned).length,
         excludedHistoryCount: result.excludedHistory.length,
@@ -225,8 +247,12 @@ class ContextCuratorTool implements vscode.LanguageModelTool<ContextCurationInpu
   }
 }
 
-export function renderHandoffPayload(bundle: { taskObjective: string; items: Array<{ section: string; content: string }>; suggestedStartingInstruction: string }): string {
+export function renderHandoffPayload(
+  bundle: { taskObjective: string; items: Array<{ section: string; content: string }>; suggestedStartingInstruction: string },
+  marker?: string
+): string {
   return [
+    ...(marker ? [marker] : []),
     '[CONTEXT HANDOFF]',
     '',
     `Task objective: ${bundle.taskObjective}`,

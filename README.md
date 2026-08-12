@@ -208,6 +208,19 @@ The bundle can contain background, decisions, constraints, relevant files, imple
 
 Code Buddy cannot insert or submit content into native Copilot Chat through a supported API. It copies the approved handoff; the developer pastes and submits it.
 
+### Fresh-task handoff gate
+
+An accepted **fresh-task** handoff starts with a Code Buddy marker and creates
+local pending-handoff state. In a different chat, Code Buddy waits before any
+file inspection, command, or implementation until the developer either pastes
+the marked bundle or submits exactly:
+
+`Code Buddy: continue without curated context`
+
+Pasting the bundle records `context.handoff_pasted`; the explicit continuation
+records `context.handoff_bypassed`. The source chat that created the handoff
+continues normally, and **Curate current task** never creates a waiting state.
+
 ## Automatic governance and curation triggers
 
 ### 1. New Copilot session
@@ -226,7 +239,7 @@ Response:
 - Records `session.boundary_detected`.
 - Offers **Carry forward curated context** or **Start without prior context**.
 - Records `session.boundary_choice`.
-- If accepted, opens the editable curation flow and copies the approved handoff for pasting into the already-open new chat.
+- If accepted, opens the editable curation flow and copies the approved handoff for pasting into the already-open new chat. The target chat waits for that marked bundle or the explicit no-context continuation before it advances.
 
 The processed prompt ID is kept in VS Code workspace state to avoid repeating the same offer after a reload.
 
@@ -245,7 +258,7 @@ Response:
 - Records `task.boundary_evaluated` with overlap, confidence, and reason.
 - If it is likely a new task, offers **Curate for a fresh chat** or **Continue unchanged**.
 - Records `task.boundary_choice`.
-- If accepted, opens the editable curation flow and copies a handoff for a fresh chat.
+- If accepted, opens the editable curation flow and copies a marked handoff for a fresh chat. That fresh chat waits for the bundle or the explicit no-context continuation before it advances.
 
 This is a deterministic lexical task-boundary cue, not a claim of perfect semantic classification. The developer always chooses what happens next.
 
