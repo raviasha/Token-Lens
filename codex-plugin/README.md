@@ -1,22 +1,23 @@
 # Code Buddy for Codex
 
-This directory is a self-contained local Codex marketplace. It includes the
-Code Buddy plugin, its lifecycle hooks, MCP server, tests, and marketplace
-metadata.
+This directory contains the development source for the Code Buddy Codex
+plugin, including its lifecycle hooks, MCP server, tests, and marketplace
+metadata. Users should install the runtime plugin from the public [Code Buddy
+distribution repository](https://github.com/raviasha/Code_Buddy), not from
+this Token Lens source checkout.
 
-## Install from a download or clone
+## Public installation
 
-1. Download or clone this repository.
-2. In a terminal, add this directory as a local marketplace:
+1. In a terminal, add the public marketplace:
 
    ```bash
-   codex plugin marketplace add /absolute/path/to/Token_Lens/codex-plugin
+   codex plugin marketplace add raviasha/Code_Buddy --ref main
    ```
 
 3. Install and enable Code Buddy:
 
    ```bash
-   codex plugin add code-buddy@token-lens
+   codex plugin add code-buddy@code-buddy
    ```
 
 4. Fully restart Codex, then create a new task. Review and trust the Code

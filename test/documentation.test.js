@@ -24,3 +24,13 @@ test('all installation guides document the shared Code Buddy health policy', () 
     assert.match(contents, /continue unchanged/i);
   }
 });
+
+test('Token Lens directs public Codex plugin installation to Code_Buddy', () => {
+  const rootReadme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  const sourceReadme = fs.readFileSync(path.join(root, 'codex-plugin', 'README.md'), 'utf8');
+
+  assert.match(rootReadme, /https:\/\/github\.com\/raviasha\/Code_Buddy/);
+  assert.match(rootReadme, /codex plugin marketplace add raviasha\/Code_Buddy --ref main/);
+  assert.match(rootReadme, /codex plugin add code-buddy@code-buddy/);
+  assert.match(sourceReadme, /https:\/\/github\.com\/raviasha\/Code_Buddy/);
+});

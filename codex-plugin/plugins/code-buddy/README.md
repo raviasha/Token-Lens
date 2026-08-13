@@ -1,5 +1,8 @@
 # Code Buddy for Codex
 
+This is the development copy. For public installation, use the [Code Buddy
+distribution repository](https://github.com/raviasha/Code_Buddy).
+
 ## Persistent setting
 
 In Codex, open **Plugins**, select **Code Buddy**, and use its Enable/Disable

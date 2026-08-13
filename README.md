@@ -55,12 +55,14 @@ The v0.8.2 SHA-256 value published in the checksum file must match the downloade
 
 ### Codex plugin
 
-The downloadable Codex marketplace is in [codex-plugin](codex-plugin). After
-cloning or downloading this repository, run:
+Install the public Codex plugin from the [Code Buddy distribution
+repository](https://github.com/raviasha/Code_Buddy). It contains only the
+runtime plugin package; this Token Lens repository remains the development
+source for the VS Code extension and Codex integration.
 
 ```bash
-codex plugin marketplace add /absolute/path/to/Token_Lens/codex-plugin
-codex plugin add code-buddy@token-lens
+codex plugin marketplace add raviasha/Code_Buddy --ref main
+codex plugin add code-buddy@code-buddy
 ```
 
 Restart Codex, create a new task, and trust the Code Buddy hook when prompted.
