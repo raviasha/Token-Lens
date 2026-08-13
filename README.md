@@ -11,6 +11,10 @@ It has four deliberately separate responsibilities:
 
 Code Buddy never silently replaces a prompt, automatically discards a conversation, or submits a new Copilot chat for the developer.
 
+For the complete runtime sequence, component boundaries, state transitions,
+local data model, policy resolution, and security boundaries, see the
+[Code Buddy technical architecture](docs/code-buddy-technical-architecture.md).
+
 ## Shared project policy
 
 Add an optional, trackable `code-buddy.yaml` at the project root to apply the
