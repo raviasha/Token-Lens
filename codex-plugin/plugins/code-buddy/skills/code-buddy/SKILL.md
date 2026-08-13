@@ -54,6 +54,10 @@ An evaluation is required; an intervention is conditional.
 - If decomposition is recommended, show the original-task option and the
   available strategy. Do not begin a subset or phase unless the developer picks
   it.
+- Put every actionable choice in the normal user-visible response, including
+  each option's label and prompt or task. Never leave choices only in tool
+  output, hidden reasoning, or a collapsed Thinking section, and never ask the
+  developer to choose unless that same visible response contains the choices.
 - Record an explicit selection with `record_intervention` using
   `prompt.review_choice` or `task.decomposition_choice`.
 - If Code Buddy's optional MCP tool fails, preserve the original request and

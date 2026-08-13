@@ -34,3 +34,15 @@ test('Token Lens directs public Codex plugin installation to Code_Buddy', () => 
   assert.match(rootReadme, /codex plugin add code-buddy@code-buddy/);
   assert.match(sourceReadme, /https:\/\/github\.com\/raviasha\/Code_Buddy/);
 });
+
+test('agent-facing Code Buddy guidance keeps choices outside hidden reasoning', () => {
+  const skill = fs.readFileSync(path.join(root, 'codex-plugin', 'plugins', 'code-buddy', 'skills', 'code-buddy', 'SKILL.md'), 'utf8');
+  const mcpServer = fs.readFileSync(path.join(root, 'codex-plugin', 'plugins', 'code-buddy', 'scripts', 'code_buddy_mcp.py'), 'utf8');
+  const manifest = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
+
+  for (const contents of [skill, mcpServer, manifest]) {
+    assert.match(contents, /normal user-visible response/);
+    assert.match(contents, /Thinking/);
+  }
+  assert.match(skill, /never ask the\s+developer to choose unless that same visible response contains the choices/i);
+});

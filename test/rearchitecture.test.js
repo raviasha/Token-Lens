@@ -217,6 +217,9 @@ test('managed agent instructions enforce evaluation and developer control', () =
   assert.match(instructions, /Estimated Context Pressure/);
   assert.match(instructions, /Never silently rewrite/);
   assert.match(instructions, /Continue with the original/);
+  assert.match(instructions, /normal user-visible response/);
+  assert.match(instructions, /collapsed Thinking section/);
+  assert.match(instructions, /never ask the developer to choose unless that same visible response contains the choices/i);
   assert.match(instructions, /new Copilot session/);
   assert.match(instructions, /starting without prior context/);
 });

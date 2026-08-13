@@ -2,7 +2,7 @@
   "name": "code-buddy",
   "displayName": "Code Buddy",
   "description": "Capture GitHub Copilot agent sessions and provide structured local coding feedback.",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "publisher": "code-buddy",
   "license": "MIT",
   "repository": {
@@ -90,7 +90,7 @@
         "toolReferenceName": "codeBuddyPromptReviewer",
         "icon": "$(checklist)",
         "userDescription": "Evaluate a coding prompt and offer selectable, intent-preserving improvements.",
-        "modelDescription": "Evaluate every meaningful coding prompt before substantial implementation. Return a structured score, contextual dimension assessments, issues, suggestions, selectable enhanced prompts, and an original-prompt option. Do not use for tiny control replies such as yes, continue, or run it. Never silently replace the user's prompt.",
+        "modelDescription": "Evaluate every meaningful coding prompt before substantial implementation. Return a structured score, contextual dimension assessments, issues, suggestions, selectable enhanced prompts, and an original-prompt option. Do not use for tiny control replies such as yes, continue, or run it. Never silently replace the user's prompt. If no option is selected, repeat every option in the normal user-visible response rather than relying on tool output or Thinking.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -109,7 +109,7 @@
         "toolReferenceName": "codeBuddyTaskDecomposer",
         "icon": "$(list-tree)",
         "userDescription": "Assess task complexity and offer dynamic decomposition strategies when useful.",
-        "modelDescription": "Evaluate each meaningful coding task before substantial implementation. Return structured complexity, reasons, dynamic decomposition strategies with dependencies, and an original-task option. Recommend decomposition only when it improves execution; never force it.",
+        "modelDescription": "Evaluate each meaningful coding task before substantial implementation. Return structured complexity, reasons, dynamic decomposition strategies with dependencies, and an original-task option. Recommend decomposition only when it improves execution; never force it. If a choice is required, repeat every option in the normal user-visible response rather than relying on tool output or Thinking.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -170,7 +170,7 @@
         "toolReferenceName": "codeBuddySessionFit",
         "icon": "$(split-horizontal)",
         "userDescription": "Assess whether a meaningful coding request belongs in the current task or merits a developer-controlled fresh task.",
-        "modelDescription": "Assess session fit before substantive implementation. Return a calibrated new-task likelihood, confidence, and reason. Never create, switch, or curate a task automatically; the developer chooses whether to continue or use a fresh-task handoff.",
+        "modelDescription": "Assess session fit before substantive implementation. Return a calibrated new-task likelihood, confidence, and reason. Never create, switch, or curate a task automatically; the developer chooses whether to continue or use a fresh-task handoff. When that choice is required, show both options in the normal user-visible response rather than relying on tool output or Thinking.",
         "inputSchema": {
           "type": "object",
           "properties": {
