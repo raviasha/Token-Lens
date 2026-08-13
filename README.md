@@ -46,12 +46,12 @@ fallback when YAML omits a value.
 
 ## Download
 
-Download the latest release from the [Code Buddy v0.8.2 release page](https://github.com/raviasha/Token-Lens/releases/tag/v0.8.2):
+Download the latest release from the [Code Buddy v0.8.3 release page](https://github.com/raviasha/Token-Lens/releases/tag/v0.8.3):
 
-- `code-buddy-0.8.2.vsix` — VS Code extension installer.
-- `code-buddy-0.8.2-SHA256SUMS.txt` — integrity checksum.
+- `code-buddy-0.8.3.vsix` — VS Code extension installer.
+- `code-buddy-0.8.3-SHA256SUMS.txt` — integrity checksum.
 
-The v0.8.2 SHA-256 value published in the checksum file must match the downloaded VSIX.
+The v0.8.3 SHA-256 value published in the checksum file must match the downloaded VSIX.
 
 ### Codex plugin
 
@@ -81,9 +81,9 @@ Hook and transcript availability can vary by Copilot surface and rollout.
 
 ### Install
 
-1. Download `code-buddy-0.8.2.vsix` and its checksum.
+1. Download `code-buddy-0.8.3.vsix` and its checksum.
 2. In VS Code, open **Extensions → Install from VSIX**.
-3. Select `code-buddy-0.8.2.vsix`.
+3. Select `code-buddy-0.8.3.vsix`.
 4. Reload the VS Code window.
 5. Open the workspace where Code Buddy should operate.
 6. Run **Code Buddy: Install Copilot Hooks** from the Command Palette.
@@ -470,11 +470,11 @@ Reload VS Code after changing runtime policies. Run **Code Buddy: Install Copilo
 
 ### Code Buddy tools do not appear
 
-1. Confirm **Code Buddy 0.8.2** is installed.
+1. Confirm **Code Buddy 0.8.3** is installed.
 2. Reload VS Code.
 3. Run **Code Buddy: Install Copilot Hooks** in the active workspace.
 4. Open **Code Buddy: Open Agent Instructions** and confirm the marked governance section exists.
-5. Open **Code Buddy: Open Hook Configuration** and confirm its command points to the installed 0.8.2 extension directory.
+5. Open **Code Buddy: Open Hook Configuration** and confirm its command points to the installed 0.8.3 extension directory.
 6. Use a supported Copilot agent mode and submit a meaningful prompt rather than a control reply.
 
 ### New-session curation does not appear
@@ -520,4 +520,4 @@ npm install
 npm test
 ```
 
-The v0.8.2 suite covers hook/report regression behavior, worktree deltas, redaction, transcript deduplication, structured contracts, original-option preservation, provider measurement order, safe semantic fallbacks, deterministic preflight denial/completion/controlled fallback, meaningful-prompt filtering, same-session new-task classification, new-session carry-forward behavior, local intervention storage, and managed instruction merging/removal.
+The v0.8.3 suite covers hook/report regression behavior, worktree deltas, redaction, transcript deduplication, structured contracts, original-option preservation, provider measurement order, safe semantic fallbacks, deterministic preflight denial/completion/controlled fallback, meaningful-prompt filtering, same-session new-task classification, new-session carry-forward behavior, local intervention storage, and managed instruction merging/removal.

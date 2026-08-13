@@ -2,7 +2,7 @@
   "name": "code-buddy",
   "displayName": "Code Buddy",
   "description": "Capture GitHub Copilot agent sessions and provide structured local coding feedback.",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "publisher": "code-buddy",
   "license": "MIT",
   "repository": {
