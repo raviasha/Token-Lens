@@ -4,5 +4,6 @@ dist/
 .token-lens/
 .code-buddy/*.jsonl
 .code-buddy/.state/
+.code-buddy/telemetry/
 .worktrees/
 *.vsix

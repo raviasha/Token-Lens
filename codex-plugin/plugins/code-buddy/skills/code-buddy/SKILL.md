@@ -39,6 +39,20 @@ that changes project state:
 Small control replies such as `yes`, `continue`, `run it`, `retry`, or `cancel`
 do not require preflight.
 
+## Human-retry feedback
+
+For every submitted prompt, show the exact `Personalized recommendation — ...`
+line supplied by the lifecycle hook. For a meaningful coding request, put it
+immediately after the health line; for a control prompt, put it at the beginning
+of the response. Do not omit, paraphrase, or upgrade a cold-start or
+low-reliability message into advice.
+
+The line comes from a local count model over comparable completed tasks. Treat
+all reported effects as associations, never causation. Do not make a
+developer-specific recommendation until the supplied evidence status passes
+its configured sample and reliability thresholds. Missing test/build outcomes
+are unknown, not passing or failing.
+
 The lifecycle hook enforces the same rule for local tools. If it denies an
 implementation call, do not retry it. Use `tool_search` if the Code Buddy MCP
 tools are deferred, invoke the missing tool or tools, and then retry.
@@ -87,6 +101,13 @@ thresholds:
   sessionFit:
     recommendFreshTaskAtOrAbove: 75
     fallbackLexicalOverlapBelow: 0.20
+measurement:
+  humanRetries:
+    minimumComparableTasks: 8
+    minimumTasksPerFactor: 5
+    reliabilityThreshold: 0.60
+    minimumEffectSize: 0.15
+    overdispersionThreshold: 1.50
 ```
 
 Raise `enhanceBelow` to request more prompt enhancement; lower the other
@@ -132,9 +153,16 @@ All generated data is local to the selected workspace:
 - `.code-buddy/codex-session.jsonl` — redacted lifecycle and transcript records
 - `.code-buddy/interventions.jsonl` — reviews, choices, measurements, and fallbacks
 - `.code-buddy/.state/` — preflight, transcript, and worktree-baseline state
+- `.code-buddy/telemetry/raw/` — versioned local task events for replay and human-retry evidence
+- `.code-buddy/telemetry/.state/` — task attribution, interaction, sequence, and deduplication state
 - `Code Buddy.md` — concise next-prompt feedback
 - `Code Buddy Analytics.md` — detailed session analytics
 
 Use `session_status` when the developer asks where the files are or asks for
 the current Code Buddy status. Do not treat a missing report as a failure while
 the current turn is still running.
+
+Use the read-only `analyze_human_retries` tool when the developer asks for the
+structured cohort, reliability score, Poisson/negative-binomial associations,
+or recommendation evidence. This Phase 1 workflow is statistical measurement,
+not ML training.

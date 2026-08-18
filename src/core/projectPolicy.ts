@@ -11,7 +11,8 @@ function clonePolicy(policy: CodeBuddyPolicy): CodeBuddyPolicy {
     promptReview: { ...policy.promptReview },
     taskDecomposition: { ...policy.taskDecomposition },
     sessionFit: { ...policy.sessionFit },
-    context: { ...policy.context }
+    context: { ...policy.context },
+    measurement: { humanRetries: { ...policy.measurement.humanRetries } }
   };
 }
 
@@ -165,7 +166,7 @@ export function loadProjectPolicy(workspacePath: string | undefined, legacyPolic
     return { policy, diagnostics };
   }
 
-  rejectUnknownKeys(parsed, ['version', 'healthCheck', 'thresholds'], '', diagnostics);
+  rejectUnknownKeys(parsed, ['version', 'healthCheck', 'thresholds', 'measurement'], '', diagnostics);
   const version = numberValue(parsed.version, 'version', diagnostics, 1, 1, true);
   if (parsed.version !== undefined && version !== 1) {
     diagnostic(diagnostics, 'invalid_value', 'version', 'Only policy version 1 is supported.');
@@ -186,6 +187,33 @@ export function loadProjectPolicy(workspacePath: string | undefined, legacyPolic
   const thresholds = mapping(parsed.thresholds);
   if (parsed.thresholds !== undefined && !thresholds) {
     diagnostic(diagnostics, 'invalid_value', 'thresholds', 'Expected a mapping.');
+  }
+  const measurement = mapping(parsed.measurement);
+  if (parsed.measurement !== undefined && !measurement) {
+    diagnostic(diagnostics, 'invalid_value', 'measurement', 'Expected a mapping.');
+  }
+  if (measurement) {
+    rejectUnknownKeys(measurement, ['humanRetries'], 'measurement', diagnostics);
+    const humanRetries = mapping(measurement.humanRetries);
+    if (measurement.humanRetries !== undefined && !humanRetries) {
+      diagnostic(diagnostics, 'invalid_value', 'measurement.humanRetries', 'Expected a mapping.');
+    }
+    if (humanRetries) {
+      rejectUnknownKeys(humanRetries, [
+        'minimumComparableTasks', 'minimumTasksPerFactor', 'reliabilityThreshold',
+        'minimumEffectSize', 'overdispersionThreshold'
+      ], 'measurement.humanRetries', diagnostics);
+      const minimumComparableTasks = numberValue(humanRetries.minimumComparableTasks, 'measurement.humanRetries.minimumComparableTasks', diagnostics, 2, 10000, true);
+      const minimumTasksPerFactor = numberValue(humanRetries.minimumTasksPerFactor, 'measurement.humanRetries.minimumTasksPerFactor', diagnostics, 3, 10000, true);
+      const reliabilityThreshold = numberValue(humanRetries.reliabilityThreshold, 'measurement.humanRetries.reliabilityThreshold', diagnostics, 0, 1);
+      const minimumEffectSize = numberValue(humanRetries.minimumEffectSize, 'measurement.humanRetries.minimumEffectSize', diagnostics, 0, 10);
+      const overdispersionThreshold = numberValue(humanRetries.overdispersionThreshold, 'measurement.humanRetries.overdispersionThreshold', diagnostics, 1, 100);
+      if (minimumComparableTasks !== undefined) policy.measurement.humanRetries.minimumComparableTasks = minimumComparableTasks;
+      if (minimumTasksPerFactor !== undefined) policy.measurement.humanRetries.minimumTasksPerFactor = minimumTasksPerFactor;
+      if (reliabilityThreshold !== undefined) policy.measurement.humanRetries.reliabilityThreshold = reliabilityThreshold;
+      if (minimumEffectSize !== undefined) policy.measurement.humanRetries.minimumEffectSize = minimumEffectSize;
+      if (overdispersionThreshold !== undefined) policy.measurement.humanRetries.overdispersionThreshold = overdispersionThreshold;
+    }
   }
   if (!thresholds) {
     return { policy, diagnostics };

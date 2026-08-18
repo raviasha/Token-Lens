@@ -1,5 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import * as vscode from 'vscode';
 import { ContextCurationService, PromptReviewService, SessionFitService, TaskDecompositionService } from './ai/services';
 import { registerCodeBuddyTools } from './ai/tools';
@@ -13,6 +15,7 @@ import {
   getCurrentHookConfigPath,
   getCurrentInterventionLogPath,
   getCurrentLogPath,
+  getCurrentTelemetryPath,
   installHooks,
   removeHooks
 } from './hookInstaller';
@@ -21,6 +24,8 @@ import { ContextMeasurementService } from './providers/contextMeasurement';
 import { DeterministicGovernance } from './runtime/governance';
 import { CodeBuddyWorkflow } from './runtime/workflow';
 import { InterventionPresenter } from './ui/interventionPresenter';
+
+const execFileAsync = promisify(execFile);
 
 async function openWorkspaceFile(filePath: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -129,6 +134,7 @@ export function activate(context: vscode.ExtensionContext): void {
         output.appendLine(`Writing current feedback to ${result.feedbackPath}`);
         output.appendLine(`Writing detailed analytics to ${result.analyticsPath}`);
         output.appendLine(`Writing structured interventions to ${result.interventionLogPath}`);
+        output.appendLine(`Writing versioned task telemetry to ${result.telemetryPath}`);
         output.appendLine(`Installed Code Buddy agent instructions at ${result.instructionsPath}`);
         await vscode.window.showInformationMessage(
           result.created ? 'Code Buddy Copilot hooks installed.' : 'Code Buddy Copilot hooks updated.'
@@ -162,6 +168,78 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await vscode.window.showErrorMessage(`Code Buddy could not open interventions: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('tokenLens.openTelemetry', async () => {
+      try {
+        const rawDirectory = path.join(getCurrentTelemetryPath(), 'raw');
+        await fs.mkdir(rawDirectory, { recursive: true });
+        await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(rawDirectory));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open raw telemetry: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('tokenLens.replayTelemetryTask', async () => {
+      try {
+        const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspace) throw new Error('Open a workspace folder first.');
+        const telemetryScript = path.join(context.extensionPath, 'telemetry.cjs');
+        const listed = await execFileAsync(process.execPath, [telemetryScript, 'list', workspace], {
+          cwd: workspace,
+          timeout: 10_000,
+          windowsHide: true
+        });
+        const taskIds = listed.stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+        if (!taskIds.length) {
+          await vscode.window.showInformationMessage('Code Buddy has no task telemetry to replay yet.');
+          return;
+        }
+        const taskId = await vscode.window.showQuickPick(taskIds, {
+          title: 'Code Buddy Task Replay',
+          placeHolder: 'Select a task to reconstruct',
+          ignoreFocusOut: true
+        });
+        if (!taskId) return;
+        const result = await execFileAsync(process.execPath, [
+          telemetryScript,
+          'replay',
+          workspace,
+          taskId
+        ], { cwd: workspace, timeout: 10_000, windowsHide: true });
+        const document = await vscode.workspace.openTextDocument({
+          language: 'markdown',
+          content: result.stdout
+        });
+        await vscode.window.showTextDocument(document, { preview: false });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not replay task telemetry: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('tokenLens.openHumanRetryEvidence', async () => {
+      try {
+        const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspace) throw new Error('Open a workspace folder first.');
+        const telemetryScript = path.join(context.extensionPath, 'telemetry.cjs');
+        const result = await execFileAsync(process.execPath, [telemetryScript, 'report', workspace], {
+          cwd: workspace,
+          timeout: 10_000,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            TOKEN_LENS_HUMAN_RETRY_MIN_TASKS: String(policy.measurement.humanRetries.minimumComparableTasks),
+            TOKEN_LENS_HUMAN_RETRY_MIN_FACTOR_TASKS: String(policy.measurement.humanRetries.minimumTasksPerFactor),
+            TOKEN_LENS_HUMAN_RETRY_RELIABILITY_THRESHOLD: String(policy.measurement.humanRetries.reliabilityThreshold),
+            TOKEN_LENS_HUMAN_RETRY_MIN_EFFECT: String(policy.measurement.humanRetries.minimumEffectSize),
+            TOKEN_LENS_HUMAN_RETRY_OVERDISPERSION_THRESHOLD: String(policy.measurement.humanRetries.overdispersionThreshold)
+          }
+        });
+        const document = await vscode.workspace.openTextDocument({ language: 'markdown', content: result.stdout });
+        await vscode.window.showTextDocument(document, { preview: false });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open human retry evidence: ${message}`);
       }
     }),
     vscode.commands.registerCommand('tokenLens.reviewPrompt', () => workflow.reviewPrompt()),

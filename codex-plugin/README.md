@@ -14,13 +14,13 @@ this Token Lens source checkout.
    codex plugin marketplace add raviasha/Code_Buddy --ref main
    ```
 
-3. Install and enable Code Buddy:
+2. Install and enable Code Buddy:
 
    ```bash
    codex plugin add code-buddy@code-buddy
    ```
 
-4. Fully restart Codex, then create a new task. Review and trust the Code
+3. Fully restart Codex, then create a new task. Review and trust the Code
    Buddy hook when Codex requests it.
 
 The native **Plugins → Code Buddy → Enable/Disable** switch is persistent for
@@ -29,6 +29,24 @@ four-check preflight and starts substantive work with a compact prompt quality,
 task scope, estimated context pressure, and session-fit health line. A fresh task created from accepted
 curated context waits until the marked handoff is pasted or the developer
 submits exactly `Code Buddy: continue without curated context`.
+
+To update an existing installation, refresh the marketplace snapshot, reinstall
+the plugin, and restart Codex:
+
+```bash
+codex plugin marketplace upgrade code-buddy
+codex plugin add code-buddy@code-buddy
+```
+
+## v0.9.0 update notes
+
+- Adds schema-1.1 task telemetry and exact human-requested retry measurement.
+- Shows a model-presented personalized-feedback status after every prompt,
+  including explicit cold-start and low-reliability states.
+- Adds descriptive comparable-task evidence, Poisson/negative-binomial count
+  analysis, and completion/test/build quality guardrails.
+- Adds read-only human-retry analysis through MCP while preserving local-only,
+  metadata-derived capture and fail-open hooks.
 
 ## Shared project policy
 
@@ -51,12 +69,49 @@ thresholds:
   sessionFit:
     recommendFreshTaskAtOrAbove: 75
     fallbackLexicalOverlapBelow: 0.20
+measurement:
+  humanRetries:
+    minimumComparableTasks: 8
+    minimumTasksPerFactor: 5
+    reliabilityThreshold: 0.60
+    minimumEffectSize: 0.15
+    overdispersionThreshold: 1.50
 ```
 
 Raise `enhanceBelow` for stricter prompt enhancement; lower the other
 thresholds for earlier decomposition, pressure, or fresh-task advice. Context
 without sufficient local evidence is shown as **checked — limited evidence**.
 A session-fit recommendation offers a curated fresh task or **Continue unchanged**; it never acts automatically.
+
+Every submitted prompt also receives a model-presented `Personalized
+recommendation —` line based on local metadata. It explicitly reports cold
+start until comparable-task and reliability thresholds are met.
+
+## Local task telemetry
+
+The plugin writes privacy-first schema-`1.1` task events to
+`.code-buddy/telemetry/raw/events-YYYY-MM-DD.jsonl`. Task, session, and
+interaction IDs remain separate, so a task can be reconstructed across
+follow-ups, compactions, and fresh sessions. Standard capture stores derived
+prompt characteristics and engineering metadata—not source, prompts,
+responses, terminal output, or tool arguments. Set
+`CODE_BUDDY_TELEMETRY_LEVEL=minimal|standard|diagnostic` to change verbosity;
+raw prompts additionally require
+`CODE_BUDDY_TELEMETRY_CAPTURE_RAW_CONTENT=true` and diagnostic mode, and are
+still secret-redacted.
+
+From a plugin development checkout:
+
+```bash
+node plugins/code-buddy/scripts/telemetry.cjs list /absolute/workspace
+node plugins/code-buddy/scripts/telemetry.cjs replay /absolute/workspace task_...
+node plugins/code-buddy/scripts/telemetry.cjs aggregate /absolute/workspace task_...
+node plugins/code-buddy/scripts/telemetry.cjs validate /absolute/workspace
+node plugins/code-buddy/scripts/telemetry.cjs dataset /absolute/workspace
+node plugins/code-buddy/scripts/telemetry.cjs report /absolute/workspace task_...
+```
+
+Telemetry failures never gate or stop Codex.
 
 To update, download a newer repository version and run the two installation
 commands again from the new local path.

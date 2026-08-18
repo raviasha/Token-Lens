@@ -10,6 +10,15 @@ const DEFAULT_POLICY = Object.freeze({
     taskScope: { decomposeAtOrAbove: 65 },
     estimatedContextPressure: { capacityTokens: 40000, warningAt: 0.70, criticalAt: 0.85 },
     sessionFit: { recommendFreshTaskAtOrAbove: 75, fallbackLexicalOverlapBelow: 0.20 }
+  },
+  measurement: {
+    humanRetries: {
+      minimumComparableTasks: 8,
+      minimumTasksPerFactor: 5,
+      reliabilityThreshold: 0.60,
+      minimumEffectSize: 0.15,
+      overdispersionThreshold: 1.50
+    }
   }
 });
 
@@ -104,7 +113,7 @@ function loadProjectPolicy(workspace) {
     add(diagnostics, 'invalid_value', 'code-buddy.yaml', String(error.message || error));
     return { policy, diagnostics };
   }
-  unknown(parsed, ['version', 'healthCheck', 'thresholds'], '', diagnostics);
+  unknown(parsed, ['version', 'healthCheck', 'thresholds', 'measurement'], '', diagnostics);
   if (parsed.version !== undefined && parsed.version !== 1) add(diagnostics, 'invalid_value', 'version', 'Only policy version 1 is supported.');
   const health = mapping(parsed.healthCheck);
   if (health) {
@@ -112,6 +121,20 @@ function loadProjectPolicy(workspace) {
     if (health.showOnEveryMeaningfulCodingTask !== undefined) {
       if (typeof health.showOnEveryMeaningfulCodingTask !== 'boolean') add(diagnostics, 'invalid_value', 'healthCheck.showOnEveryMeaningfulCodingTask', 'Expected true or false.');
       else policy.healthCheck.showOnEveryMeaningfulCodingTask = health.showOnEveryMeaningfulCodingTask;
+    }
+  }
+  const measurement = mapping(parsed.measurement);
+  if (measurement) {
+    unknown(measurement, ['humanRetries'], 'measurement', diagnostics);
+    const humanRetries = mapping(measurement.humanRetries);
+    if (humanRetries) {
+      unknown(humanRetries, ['minimumComparableTasks', 'minimumTasksPerFactor', 'reliabilityThreshold', 'minimumEffectSize', 'overdispersionThreshold'], 'measurement.humanRetries', diagnostics);
+      const selected = policy.measurement.humanRetries;
+      selected.minimumComparableTasks = number(humanRetries.minimumComparableTasks, selected.minimumComparableTasks, 'measurement.humanRetries.minimumComparableTasks', diagnostics, 2, 10000, true);
+      selected.minimumTasksPerFactor = number(humanRetries.minimumTasksPerFactor, selected.minimumTasksPerFactor, 'measurement.humanRetries.minimumTasksPerFactor', diagnostics, 3, 10000, true);
+      selected.reliabilityThreshold = number(humanRetries.reliabilityThreshold, selected.reliabilityThreshold, 'measurement.humanRetries.reliabilityThreshold', diagnostics, 0, 1);
+      selected.minimumEffectSize = number(humanRetries.minimumEffectSize, selected.minimumEffectSize, 'measurement.humanRetries.minimumEffectSize', diagnostics, 0, 10);
+      selected.overdispersionThreshold = number(humanRetries.overdispersionThreshold, selected.overdispersionThreshold, 'measurement.humanRetries.overdispersionThreshold', diagnostics, 1, 100);
     }
   }
   const thresholds = mapping(parsed.thresholds);

@@ -18,6 +18,15 @@ DEFAULT_POLICY = {
         "estimatedContextPressure": {"capacityTokens": 40000, "warningAt": 0.70, "criticalAt": 0.85},
         "sessionFit": {"recommendFreshTaskAtOrAbove": 75, "fallbackLexicalOverlapBelow": 0.20},
     },
+    "measurement": {
+        "humanRetries": {
+            "minimumComparableTasks": 8,
+            "minimumTasksPerFactor": 5,
+            "reliabilityThreshold": 0.60,
+            "minimumEffectSize": 0.15,
+            "overdispersionThreshold": 1.50,
+        }
+    },
 }
 
 
@@ -106,7 +115,7 @@ def load_project_policy(workspace: str | Path | None) -> dict[str, Any]:
     except OSError as error:
         add(diagnostics, "invalid_value", "code-buddy.yaml", str(error))
         return {"policy": policy, "diagnostics": diagnostics}
-    unknown(parsed, ["version", "healthCheck", "thresholds"], "", diagnostics)
+    unknown(parsed, ["version", "healthCheck", "thresholds", "measurement"], "", diagnostics)
     if parsed.get("version") is not None and parsed.get("version") != 1:
         add(diagnostics, "invalid_value", "version", "Only policy version 1 is supported.")
     health = mapping(parsed.get("healthCheck"))
@@ -118,6 +127,18 @@ def load_project_policy(workspace: str | Path | None) -> dict[str, Any]:
                 add(diagnostics, "invalid_value", "healthCheck.showOnEveryMeaningfulCodingTask", "Expected true or false.")
             else:
                 policy["healthCheck"]["showOnEveryMeaningfulCodingTask"] = visible
+    measurement = mapping(parsed.get("measurement"))
+    if measurement:
+        unknown(measurement, ["humanRetries"], "measurement", diagnostics)
+        human_retries = mapping(measurement.get("humanRetries"))
+        if human_retries:
+            unknown(human_retries, ["minimumComparableTasks", "minimumTasksPerFactor", "reliabilityThreshold", "minimumEffectSize", "overdispersionThreshold"], "measurement.humanRetries", diagnostics)
+            selected = policy["measurement"]["humanRetries"]
+            selected["minimumComparableTasks"] = number(human_retries.get("minimumComparableTasks"), selected["minimumComparableTasks"], "measurement.humanRetries.minimumComparableTasks", diagnostics, 2, 10000, True)
+            selected["minimumTasksPerFactor"] = number(human_retries.get("minimumTasksPerFactor"), selected["minimumTasksPerFactor"], "measurement.humanRetries.minimumTasksPerFactor", diagnostics, 3, 10000, True)
+            selected["reliabilityThreshold"] = number(human_retries.get("reliabilityThreshold"), selected["reliabilityThreshold"], "measurement.humanRetries.reliabilityThreshold", diagnostics, 0, 1)
+            selected["minimumEffectSize"] = number(human_retries.get("minimumEffectSize"), selected["minimumEffectSize"], "measurement.humanRetries.minimumEffectSize", diagnostics, 0, 10)
+            selected["overdispersionThreshold"] = number(human_retries.get("overdispersionThreshold"), selected["overdispersionThreshold"], "measurement.humanRetries.overdispersionThreshold", diagnostics, 1, 100)
     thresholds = mapping(parsed.get("thresholds"))
     if not thresholds:
         return {"policy": policy, "diagnostics": diagnostics}

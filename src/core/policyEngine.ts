@@ -22,6 +22,15 @@ export const DEFAULT_POLICY: CodeBuddyPolicy = {
     allowVisionVerification: true,
     offerCurationOnNewSession: true,
     offerCurationOnNewTask: true
+  },
+  measurement: {
+    humanRetries: {
+      minimumComparableTasks: 8,
+      minimumTasksPerFactor: 5,
+      reliabilityThreshold: 0.60,
+      minimumEffectSize: 0.15,
+      overdispersionThreshold: 1.50
+    }
   }
 };
 

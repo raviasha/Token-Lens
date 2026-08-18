@@ -44,8 +44,8 @@ function writePendingHandoff(stateDirectory, handoff = {}) {
   }), 'utf8');
 }
 
-test('writes structured events and redacts sensitive fields', () => {
-  const { records } = runHook({
+test('writes structured events, redacts sensitive fields, and injects cold-start feedback', () => {
+  const { records, output } = runHook({
     hook_event_name: 'UserPromptSubmit',
     session_id: 'session-1',
     timestamp: '2026-08-08T00:00:00.000Z',
@@ -66,6 +66,7 @@ test('writes structured events and redacts sensitive fields', () => {
   assert.equal(promptRecord.data.context.role, 'user_prompt');
   assert.equal(promptRecord.data.context.estimatedTokens, Math.ceil(promptRecord.data.context.observedChars / 4));
   assert.ok(records.some((record) => record.recordType === 'preflight.started'));
+  assert.match(output?.hookSpecificOutput?.additionalContext || '', /Personalized recommendation — Not enough data/);
 });
 
 test('preflight gate redirects implementation until all four Code Buddy checks complete', () => {
@@ -274,11 +275,12 @@ test('semantic tool failures satisfy preflight through the safe fallback contrac
 
 test('control replies bypass semantic preflight enforcement', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-control-'));
-  runHook({
+  const submitted = runHook({
     hook_event_name: 'UserPromptSubmit',
     session_id: 'control-session',
     prompt: 'continue'
   }, {}, directory);
+  assert.match(submitted.output?.hookSpecificOutput?.additionalContext || '', /At the beginning.*Personalized recommendation — Not enough data/);
   const allowed = runHook({
     hook_event_name: 'PreToolUse',
     session_id: 'control-session',
@@ -326,7 +328,7 @@ test('releases a target session after the marked handoff is pasted', () => {
     cwd: directory,
     prompt: '<!-- code-buddy-handoff:handoff-1 -->\n[CONTEXT HANDOFF]\n\nTask objective: Implement the requested command.'
   }, environment, directory);
-  assert.equal(pasted.output, null);
+  assert.match(pasted.output?.hookSpecificOutput?.additionalContext || '', /Personalized recommendation — Not enough data/);
   assert.equal(fs.existsSync(path.join(stateDirectory, 'pending-fresh-handoff.json')), false);
   assert.ok(pasted.records.some((record) => record.recordType === 'context.handoff_pasted'));
   assert.ok(pasted.records.some((record) => record.recordType === 'preflight.started'));
@@ -344,7 +346,7 @@ test('releases a target session after the explicit no-context continuation', () 
     cwd: directory,
     prompt: 'Code Buddy: continue without curated context'
   }, environment, directory);
-  assert.equal(bypassed.output, null);
+  assert.match(bypassed.output?.hookSpecificOutput?.additionalContext || '', /Personalized recommendation — Not enough data/);
   assert.equal(fs.existsSync(path.join(stateDirectory, 'pending-fresh-handoff.json')), false);
   assert.ok(bypassed.records.some((record) => record.recordType === 'context.handoff_bypassed'));
   assert.ok(bypassed.records.some((record) => record.recordType === 'preflight.started'));

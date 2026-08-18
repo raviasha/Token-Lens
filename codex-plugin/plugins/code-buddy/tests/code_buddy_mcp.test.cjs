@@ -81,6 +81,31 @@ test('session fit uses a model assessment but keeps fresh-task action developer-
   assert.equal(result.newTaskLikelihood, 82);
 });
 
+test('session status exposes task telemetry and replay paths', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-mcp-status-'));
+  const telemetryState = path.join(workspace, '.code-buddy', 'telemetry', '.state', 'telemetry-state.json');
+  fs.mkdirSync(path.dirname(telemetryState), { recursive: true });
+  fs.writeFileSync(telemetryState, JSON.stringify({
+    active_task: { task_id: 'task_status' },
+    tasks: { task_status: { task_id: 'task_status' } }
+  }), 'utf8');
+  const status = call('session_status', { workspace });
+  assert.equal(status.telemetrySchemaVersion, '1.1');
+  assert.equal(status.telemetryTaskCount, 1);
+  assert.equal(status.activeTaskId, 'task_status');
+  assert.match(status.telemetryRawDirectory, /\.code-buddy[/\\]telemetry[/\\]raw$/);
+  assert.match(status.telemetryReplayCommand, /telemetry\.cjs.*replay/);
+  assert.match(status.humanRetryAnalysisCommand, /telemetry\.cjs.*analyze/);
+});
+
+test('human retry analysis always returns model-derived cold-start feedback', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-mcp-analysis-'));
+  const analysis = call('analyze_human_retries', { workspace });
+  assert.equal(analysis.analysis_schema_version, 'human-retry-analysis-v1');
+  assert.match(analysis.feedback, /^Personalized recommendation — Not enough data yet/);
+  assert.equal(analysis.reliability.enough_data, false);
+});
+
 test('Node and Python policy parsers produce the same normalized policy', () => {
   for (const contents of Object.values(fixtures)) {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-policy-'));

@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -548,6 +549,17 @@ def session_status(arguments: dict[str, Any]) -> dict[str, Any]:
     workspace, log_path, intervention_path, state_path = paths(arguments)
     session_id = as_string(arguments.get("sessionId"))
     records = load_records(log_path, session_id)
+    telemetry_root = state_path / "telemetry"
+    telemetry_state_path = telemetry_root / ".state" / "telemetry-state.json"
+    telemetry_state: dict[str, Any] = {}
+    try:
+        candidate = json.loads(telemetry_state_path.read_text(encoding="utf-8"))
+        if isinstance(candidate, dict):
+            telemetry_state = candidate
+    except (OSError, json.JSONDecodeError):
+        pass
+    raw_files = sorted((telemetry_root / "raw").glob("events-*.jsonl")) if (telemetry_root / "raw").exists() else []
+    active_task = telemetry_state.get("active_task") if isinstance(telemetry_state.get("active_task"), dict) else {}
     result = {
         "workspace": str(workspace),
         "sessionId": session_id or None,
@@ -556,9 +568,43 @@ def session_status(arguments: dict[str, Any]) -> dict[str, Any]:
         "feedbackReport": str(workspace / "Code Buddy.md"),
         "analyticsReport": str(workspace / "Code Buddy Analytics.md"),
         "stateDirectory": str(state_path / ".state"),
+        "telemetryRoot": str(telemetry_root),
+        "telemetryRawDirectory": str(telemetry_root / "raw"),
+        "telemetrySchemaVersion": "1.1",
+        "telemetryRawFileCount": len(raw_files),
+        "telemetryTaskCount": len(telemetry_state.get("tasks") or {}),
+        "activeTaskId": active_task.get("task_id"),
+        "telemetryReplayCommand": f'node "{Path(__file__).with_name("telemetry.cjs")}" replay "{workspace}" task_...',
+        "humanRetryAnalysisCommand": f'node "{Path(__file__).with_name("telemetry.cjs")}" analyze "{workspace}"',
         "recordCount": len(records),
         "latestRecordType": records[-1].get("recordType") if records else None,
     }
+    return result
+
+
+def analyze_human_retries(arguments: dict[str, Any]) -> dict[str, Any]:
+    workspace = Path(as_string(arguments.get("workspace"))).expanduser().resolve()
+    script = Path(__file__).with_name("telemetry.cjs")
+    policy = load_project_policy(workspace)["policy"]["measurement"]["humanRetries"]
+    environment = dict(os.environ)
+    environment.update({
+        "TOKEN_LENS_HUMAN_RETRY_MIN_TASKS": str(policy["minimumComparableTasks"]),
+        "TOKEN_LENS_HUMAN_RETRY_MIN_FACTOR_TASKS": str(policy["minimumTasksPerFactor"]),
+        "TOKEN_LENS_HUMAN_RETRY_RELIABILITY_THRESHOLD": str(policy["reliabilityThreshold"]),
+        "TOKEN_LENS_HUMAN_RETRY_MIN_EFFECT": str(policy["minimumEffectSize"]),
+        "TOKEN_LENS_HUMAN_RETRY_OVERDISPERSION_THRESHOLD": str(policy["overdispersionThreshold"]),
+    })
+    command = ["node", str(script), "analyze", str(workspace)]
+    task_id = as_string(arguments.get("taskId"))
+    if task_id:
+        command.append(task_id)
+    completed = subprocess.run(command, cwd=workspace, env=environment, capture_output=True, text=True, timeout=10, check=False)
+    if completed.returncode not in (0, 1):
+        raise ValueError(completed.stderr.strip() or "Human retry analysis failed.")
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError("Human retry analysis returned invalid JSON.") from error
     return result
 
 
@@ -590,6 +636,7 @@ TOOLS = [
     tool("assess_session_fit", "Assess whether the current meaningful coding request belongs in this task or merits a developer-controlled fresh-task handoff. It never creates a task automatically. If a fresh-task choice is recommended, show both options in the normal user-visible response instead of relying on tool output or Thinking.", ["workspace", "prompt"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "prompt": {"type": "string"}, "previousPrompt": {"type": "string"}, "relevantContext": {"type": "array", "items": {"type": "string"}}, "modelAssessment": {"type": "object", "description": "Optional Codex semantic assessment with newTaskLikelihood, confidence, and reason."}}),
     tool("curate_context", "Create a previewable minimum-sufficient handoff only after the developer chooses curation. Set developerConfirmed to true only after the developer chose fresh-task curation; that creates a marked handoff that must be pasted into the fresh task. Pass modelBundle when a Codex semantic curation has been prepared.", ["workspace", "targetTask", "mode"], {"workspace": WORKSPACE, "sessionId": SESSION, "targetTask": {"type": "string"}, "mode": {"type": "string", "enum": ["fresh_task", "continue_current"]}, "developerConfirmed": {"type": "boolean", "description": "True only after the developer explicitly chose fresh-task curation."}, "conversationHistory": {"type": "array", "items": {"type": "string"}}, "knownDecisions": {"type": "array", "items": {"type": "string"}}, "relevantFiles": {"type": "array", "items": {"type": "string"}}, "constraints": {"type": "array", "items": {"type": "string"}}, "implementationState": {"type": "array", "items": {"type": "string"}}, "completedWork": {"type": "array", "items": {"type": "string"}}, "remainingWork": {"type": "array", "items": {"type": "string"}}, "knownIssues": {"type": "array", "items": {"type": "string"}}, "validation": {"type": "array", "items": {"type": "string"}}, "openQuestions": {"type": "array", "items": {"type": "string"}}, "pinnedItems": {"type": "array", "items": {"type": "string"}}, "excludedHistory": {"type": "array", "items": {"type": "string"}}, "modelBundle": {"type": "object", "description": "Optional Codex semantic curation with taskObjective, items, suggestedStartingInstruction, and excludedHistory."}}),
     tool("session_status", "Return local Code Buddy log and report paths for the current workspace.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION}, True),
+    tool("analyze_human_retries", "Return the local human-retry evidence model, reliability status, and always-present personalized feedback. Associations are observational, never causal.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}}, True),
     tool("record_intervention", "Record the developer's explicit choice or a controlled fallback in the local intervention log.", ["workspace", "eventType", "data"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "eventType": {"type": "string"}, "data": {"type": "object"}}),
 ]
 
@@ -601,6 +648,7 @@ HANDLERS = {
     "assess_session_fit": assess_session_fit,
     "curate_context": curate_context,
     "session_status": session_status,
+    "analyze_human_retries": analyze_human_retries,
     "record_intervention": record_intervention,
 }
 

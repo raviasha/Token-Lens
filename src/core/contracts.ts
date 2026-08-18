@@ -253,6 +253,15 @@ export interface CodeBuddyPolicy {
     offerCurationOnNewSession: boolean;
     offerCurationOnNewTask: boolean;
   };
+  measurement: {
+    humanRetries: {
+      minimumComparableTasks: number;
+      minimumTasksPerFactor: number;
+      reliabilityThreshold: number;
+      minimumEffectSize: number;
+      overdispersionThreshold: number;
+    };
+  };
 }
 
 export interface ProjectPolicyDiagnostic {

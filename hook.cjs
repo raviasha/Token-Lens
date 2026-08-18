@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const childProcess = require('node:child_process');
 const path = require('node:path');
+const { captureHookEvent, getPersonalizedRecommendation } = require('./telemetry.cjs');
 
 const sensitiveKeyPattern = /(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential|private[_-]?key)/i;
 const secretPatterns = [
@@ -93,6 +94,13 @@ function parseInput(input) {
     return JSON.parse(input);
   } catch {
     return { rawInput: input };
+  }
+}
+
+function captureTelemetry(payload, options) {
+  const result = captureHookEvent(payload, options);
+  if (!result.captured && result.reason === 'telemetry_failure') {
+    process.stderr.write(`Code Buddy telemetry warning: ${result.error || 'capture failed safely'}\n`);
   }
 }
 
@@ -698,6 +706,39 @@ function handlePendingHandoffEvent(logPath, payload, eventName) {
   return { waiting: false, output: null };
 }
 
+function personalizedFeedbackOutput(payload, eventName) {
+  if (eventName !== 'UserPromptSubmit' && eventName !== 'userPromptSubmitted') return null;
+  const telemetryPath = process.env.CODE_BUDDY_TELEMETRY_DIR
+    || process.env.TOKEN_LENS_TELEMETRY_DIR
+    || getWorkspace(payload);
+  const analysis = getPersonalizedRecommendation(telemetryPath);
+  const prompt = getValue(payload, 'prompt');
+  const placement = isMeaningfulPrompt(prompt)
+    ? 'Immediately after the required Code Buddy health line'
+    : 'At the beginning of the response';
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `${placement}, show this exact model-derived local feedback line to the developer: "${analysis.feedback}" Do not omit the line. Treat the evidence as observational, never causal.`
+    }
+  };
+}
+
+function mergeHookOutput(first, second) {
+  if (!first) return second;
+  if (!second) return first;
+  const firstSpecific = first.hookSpecificOutput || {};
+  const secondSpecific = second.hookSpecificOutput || {};
+  return {
+    ...first,
+    hookSpecificOutput: {
+      ...firstSpecific,
+      ...secondSpecific,
+      additionalContext: [firstSpecific.additionalContext, secondSpecific.additionalContext].filter(Boolean).join('\n\n') || undefined
+    }
+  };
+}
+
 function preflightToolLabel(requirement) {
   return {
     promptReviewer: 'code-buddy_reviewPrompt',
@@ -870,7 +911,9 @@ function normalizeHookType(eventName) {
     ErrorOccurred: 'error.occurred',
     errorOccurred: 'error.occurred',
     PreCompact: 'context.compacted',
-    preCompact: 'context.compacted'
+    preCompact: 'context.compacted',
+    PostCompact: 'context.compaction_completed',
+    postCompact: 'context.compaction_completed'
   };
   return types[eventName] || 'hook.event';
 }
@@ -955,6 +998,13 @@ function normalizeHookData(eventName, payload) {
         transcriptPath,
         trigger: getValue(payload, 'trigger'),
         customInstructions: getValue(payload, 'custom_instructions', 'customInstructions')
+      });
+    case 'PostCompact':
+    case 'postCompact':
+      return redact({
+        transcriptPath,
+        contextBeforeTokensEstimate: getValue(payload, 'context_before_tokens_estimate', 'contextBeforeTokensEstimate'),
+        contextAfterTokensEstimate: getValue(payload, 'context_after_tokens_estimate', 'contextAfterTokensEstimate')
       });
     default:
       return redact(payload);
@@ -1256,16 +1306,24 @@ function main(input) {
   }
 
   const eventId = appendHookRecord(logPath, payload, event, sessionId);
+  const isStopEvent = event === 'Stop' || event === 'agentStop';
+  if (!isStopEvent) {
+    captureTelemetry(payload, { platform: 'github-copilot', editor: 'vscode', legacyLogPath: logPath });
+  }
   const handoff = handlePendingHandoffEvent(logPath, payload, event);
-  const hookOutput = handoff.waiting ? handoff.output : handlePreflightEvent(logPath, payload, event, eventId);
+  const hookOutput = mergeHookOutput(
+    handoff.waiting ? handoff.output : handlePreflightEvent(logPath, payload, event, eventId),
+    personalizedFeedbackOutput(payload, event)
+  );
 
   if (event === 'UserPromptSubmit' || event === 'userPromptSubmitted') {
     runCodeBuddy('start_turn', payload, sessionId, eventId);
   }
 
-  if (event === 'Stop' || event === 'agentStop') {
+  if (isStopEvent) {
     captureTranscript(logPath, payload, event, sessionId);
     runCodeBuddy('end_turn', payload, sessionId, eventId);
+    captureTelemetry(payload, { platform: 'github-copilot', editor: 'vscode', legacyLogPath: logPath });
   }
 
   return hookOutput;

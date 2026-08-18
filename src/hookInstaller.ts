@@ -37,11 +37,22 @@ export interface HookSettings {
   contextOfferCurationOnNewSession: boolean;
   contextOfferCurationOnNewTask: boolean;
   promptReviewEnabled: boolean;
+  promptReviewThreshold: number;
   taskDecompositionEnabled: boolean;
+  taskDecompositionThreshold: number;
   sessionFitThreshold: number;
   healthCheckVisible: boolean;
   preflightEnforceBeforeImplementation: boolean;
   preflightDenialsBeforeFallback: number;
+  telemetryEnabled: boolean;
+  telemetryLevel: 'minimal' | 'standard' | 'diagnostic';
+  telemetryCaptureRawContent: boolean;
+  telemetryDirectory: string;
+  humanRetryMinimumComparableTasks: number;
+  humanRetryMinimumTasksPerFactor: number;
+  humanRetryReliabilityThreshold: number;
+  humanRetryMinimumEffectSize: number;
+  humanRetryOverdispersionThreshold: number;
 }
 
 export interface HookInstallResult {
@@ -50,6 +61,7 @@ export interface HookInstallResult {
   feedbackPath: string;
   analyticsPath: string;
   interventionLogPath: string;
+  telemetryPath: string;
   instructionsPath: string;
   created: boolean;
 }
@@ -66,7 +78,8 @@ const hookEvents = [
   'SubagentStart',
   'SubagentStop',
   'ErrorOccurred',
-  'PreCompact'
+  'PreCompact',
+  'PostCompact'
 ];
 
 function quoteBash(value: string): string {
@@ -130,7 +143,9 @@ function getSettings(root: vscode.Uri): HookSettings & { logPath: string; feedba
   const contextOfferCurationOnNewSession = policy.context.offerCurationOnNewSession;
   const contextOfferCurationOnNewTask = policy.context.offerCurationOnNewTask;
   const promptReviewEnabled = policy.promptReview.enabled;
+  const promptReviewThreshold = policy.promptReview.interventionThreshold;
   const taskDecompositionEnabled = policy.taskDecomposition.enabled;
+  const taskDecompositionThreshold = policy.taskDecomposition.interventionThreshold;
   const sessionFitThreshold = policy.sessionFit.recommendFreshTaskAtOrAbove;
   const healthCheckVisible = policy.healthCheck.showOnEveryMeaningfulCodingTask;
   const preflightEnforceBeforeImplementation = configuration.get<boolean>('preflight.enforceBeforeImplementation', true);
@@ -138,6 +153,12 @@ function getSettings(root: vscode.Uri): HookSettings & { logPath: string; feedba
     5,
     Math.max(1, Math.round(configuration.get<number>('preflight.denialsBeforeFallback', 1)))
   );
+  const telemetryEnabled = configuration.get<boolean>('telemetry.enabled', true);
+  const telemetryLevel = configuration.get<'minimal' | 'standard' | 'diagnostic'>('telemetry.level', 'standard');
+  const telemetryCaptureRawContent = configuration.get<boolean>('telemetry.captureRawContent', false);
+  const configuredTelemetryDirectory = configuration.get<string>('telemetry.directory', path.join('.code-buddy', 'telemetry'));
+  const telemetryDirectory = configuredTelemetryDirectory.trim() || path.join('.code-buddy', 'telemetry');
+  const humanRetryPolicy = policy.measurement.humanRetries;
 
   return {
     logFile,
@@ -157,11 +178,22 @@ function getSettings(root: vscode.Uri): HookSettings & { logPath: string; feedba
     contextOfferCurationOnNewSession,
     contextOfferCurationOnNewTask,
     promptReviewEnabled,
+    promptReviewThreshold,
     taskDecompositionEnabled,
+    taskDecompositionThreshold,
     sessionFitThreshold,
     healthCheckVisible,
     preflightEnforceBeforeImplementation,
     preflightDenialsBeforeFallback,
+    telemetryEnabled,
+    telemetryLevel,
+    telemetryCaptureRawContent,
+    telemetryDirectory,
+    humanRetryMinimumComparableTasks: humanRetryPolicy.minimumComparableTasks,
+    humanRetryMinimumTasksPerFactor: humanRetryPolicy.minimumTasksPerFactor,
+    humanRetryReliabilityThreshold: humanRetryPolicy.reliabilityThreshold,
+    humanRetryMinimumEffectSize: humanRetryPolicy.minimumEffectSize,
+    humanRetryOverdispersionThreshold: humanRetryPolicy.overdispersionThreshold,
     logPath: resolveLogPath(root, logFile),
     feedbackPath: resolveLogPath(root, feedbackFile),
     analyticsPath: resolveLogPath(root, analyticsFile),
@@ -243,11 +275,22 @@ function createHookEntry(
       TOKEN_LENS_CONTEXT_OFFER_CURATION_ON_NEW_SESSION: String(settings.contextOfferCurationOnNewSession),
       TOKEN_LENS_CONTEXT_OFFER_CURATION_ON_NEW_TASK: String(settings.contextOfferCurationOnNewTask),
       TOKEN_LENS_PROMPT_REVIEW_ENABLED: String(settings.promptReviewEnabled),
+      TOKEN_LENS_PROMPT_REVIEW_THRESHOLD: String(settings.promptReviewThreshold),
       TOKEN_LENS_TASK_DECOMPOSITION_ENABLED: String(settings.taskDecompositionEnabled),
+      TOKEN_LENS_TASK_DECOMPOSITION_THRESHOLD: String(settings.taskDecompositionThreshold),
       TOKEN_LENS_SESSION_FIT_THRESHOLD: String(settings.sessionFitThreshold),
       TOKEN_LENS_HEALTH_CHECK_VISIBLE: String(settings.healthCheckVisible),
       TOKEN_LENS_PREFLIGHT_ENFORCE: String(settings.preflightEnforceBeforeImplementation),
-      TOKEN_LENS_PREFLIGHT_DENIALS_BEFORE_FALLBACK: String(settings.preflightDenialsBeforeFallback)
+      TOKEN_LENS_PREFLIGHT_DENIALS_BEFORE_FALLBACK: String(settings.preflightDenialsBeforeFallback),
+      TOKEN_LENS_TELEMETRY_ENABLED: String(settings.telemetryEnabled),
+      TOKEN_LENS_TELEMETRY_LEVEL: settings.telemetryLevel,
+      TOKEN_LENS_TELEMETRY_CAPTURE_RAW_CONTENT: String(settings.telemetryCaptureRawContent),
+      TOKEN_LENS_TELEMETRY_DIR: resolveLogPath(root, settings.telemetryDirectory),
+      TOKEN_LENS_HUMAN_RETRY_MIN_TASKS: String(settings.humanRetryMinimumComparableTasks),
+      TOKEN_LENS_HUMAN_RETRY_MIN_FACTOR_TASKS: String(settings.humanRetryMinimumTasksPerFactor),
+      TOKEN_LENS_HUMAN_RETRY_RELIABILITY_THRESHOLD: String(settings.humanRetryReliabilityThreshold),
+      TOKEN_LENS_HUMAN_RETRY_MIN_EFFECT: String(settings.humanRetryMinimumEffectSize),
+      TOKEN_LENS_HUMAN_RETRY_OVERDISPERSION_THRESHOLD: String(settings.humanRetryOverdispersionThreshold)
     },
     timeoutSec: settings.hookTimeoutSeconds
   };
@@ -371,6 +414,7 @@ export async function installHooks(context: vscode.ExtensionContext): Promise<Ho
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   await fs.mkdir(path.dirname(settings.logPath), { recursive: true });
   await fs.mkdir(path.dirname(settings.interventionLogPath), { recursive: true });
+  await fs.mkdir(resolveLogPath(root, settings.telemetryDirectory), { recursive: true });
   await fs.mkdir(path.dirname(settings.feedbackPath), { recursive: true });
   await fs.mkdir(path.dirname(settings.analyticsPath), { recursive: true });
   await migrateLegacyLog(root, settings);
@@ -387,6 +431,7 @@ export async function installHooks(context: vscode.ExtensionContext): Promise<Ho
     feedbackPath: settings.feedbackPath,
     analyticsPath: settings.analyticsPath,
     interventionLogPath: settings.interventionLogPath,
+    telemetryPath: resolveLogPath(root, settings.telemetryDirectory),
     instructionsPath,
     created
   };
@@ -418,6 +463,11 @@ export function getCurrentAnalyticsPath(): string {
 
 export function getCurrentInterventionLogPath(): string {
   return getSettings(getWorkspaceRoot()).interventionLogPath;
+}
+
+export function getCurrentTelemetryPath(): string {
+  const root = getWorkspaceRoot();
+  return resolveLogPath(root, getSettings(root).telemetryDirectory);
 }
 
 export function getCurrentAgentInstructionsPath(): string {

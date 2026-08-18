@@ -1,7 +1,7 @@
 {
   "name": "code-buddy",
-  "version": "0.8.2+codex.20260813070834",
-  "description": "Local governance, prompt quality, context handoffs, and analytics for Codex coding tasks.",
+  "version": "0.9.0+codex.20260818080430",
+  "description": "Local governance, prompt quality, context handoffs, and replayable task telemetry for Codex coding tasks.",
   "author": {
     "name": "Code Buddy",
     "url": "https://github.com/raviasha/Token-Lens"
@@ -14,13 +14,14 @@
     "governance",
     "prompt-review",
     "context",
-    "analytics"
+    "analytics",
+    "telemetry"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Code Buddy",
     "shortDescription": "Governance and local analytics for Codex coding tasks.",
-    "longDescription": "Code Buddy captures Codex lifecycle events locally, enforces a developer-controlled preflight, reviews prompts, offers optional task decomposition and context handoffs, and refreshes local reports.",
+    "longDescription": "Code Buddy captures Codex lifecycle events locally, enforces a developer-controlled preflight, reviews prompts, offers optional task decomposition and context handoffs, records privacy-first task telemetry, and rebuilds task lifecycles without a cloud service.",
     "developerName": "Code Buddy",
     "category": "Developer Tools",
     "capabilities": [

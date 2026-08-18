@@ -45,6 +45,15 @@ export function getCodeBuddyPolicy(scope?: vscode.ConfigurationScope): CodeBuddy
       allowVisionVerification: configuration.get<boolean>('context.allowVisionVerification', DEFAULT_POLICY.context.allowVisionVerification),
       offerCurationOnNewSession: configuration.get<boolean>('context.offerCurationOnNewSession', DEFAULT_POLICY.context.offerCurationOnNewSession),
       offerCurationOnNewTask: configuration.get<boolean>('context.offerCurationOnNewTask', DEFAULT_POLICY.context.offerCurationOnNewTask)
+    },
+    measurement: {
+      humanRetries: {
+        minimumComparableTasks: Math.max(2, Math.round(finite(configuration.get<number>('humanRetry.minimumComparableTasks', DEFAULT_POLICY.measurement.humanRetries.minimumComparableTasks), DEFAULT_POLICY.measurement.humanRetries.minimumComparableTasks))),
+        minimumTasksPerFactor: Math.max(3, Math.round(finite(configuration.get<number>('humanRetry.minimumTasksPerFactor', DEFAULT_POLICY.measurement.humanRetries.minimumTasksPerFactor), DEFAULT_POLICY.measurement.humanRetries.minimumTasksPerFactor))),
+        reliabilityThreshold: clamp(finite(configuration.get<number>('humanRetry.reliabilityThreshold', DEFAULT_POLICY.measurement.humanRetries.reliabilityThreshold), DEFAULT_POLICY.measurement.humanRetries.reliabilityThreshold), 0, 1),
+        minimumEffectSize: Math.max(0, finite(configuration.get<number>('humanRetry.minimumEffectSize', DEFAULT_POLICY.measurement.humanRetries.minimumEffectSize), DEFAULT_POLICY.measurement.humanRetries.minimumEffectSize)),
+        overdispersionThreshold: Math.max(1, finite(configuration.get<number>('humanRetry.overdispersionThreshold', DEFAULT_POLICY.measurement.humanRetries.overdispersionThreshold), DEFAULT_POLICY.measurement.humanRetries.overdispersionThreshold))
+      }
     }
   };
   const workspacePath = scope instanceof vscode.Uri

@@ -56,6 +56,7 @@ test('injects automatic Code Buddy preflight for a meaningful request', () => {
   assert.match(context, /mcp__code_buddy__measure_context/);
   assert.match(context, /mcp__code_buddy__assess_session_fit/);
   assert.match(context, /Code Buddy:/);
+  assert.match(context, /Personalized recommendation — Not enough data/);
 });
 
 test('requires all four automatic Code Buddy tools before implementation', () => {

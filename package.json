@@ -1,8 +1,8 @@
 {
   "name": "code-buddy",
   "displayName": "Code Buddy",
-  "description": "Capture GitHub Copilot agent sessions and provide structured local coding feedback.",
-  "version": "0.8.4",
+  "description": "Capture GitHub Copilot agent sessions, replay task telemetry, and provide structured local coding feedback.",
+  "version": "0.9.0",
   "publisher": "code-buddy",
   "license": "MIT",
   "repository": {
@@ -24,6 +24,9 @@
     "onCommand:tokenLens.openHookConfig",
     "onCommand:tokenLens.openAgentInstructions",
     "onCommand:tokenLens.openInterventions",
+    "onCommand:tokenLens.openTelemetry",
+    "onCommand:tokenLens.replayTelemetryTask",
+    "onCommand:tokenLens.openHumanRetryEvidence",
     "onCommand:tokenLens.reviewPrompt",
     "onCommand:tokenLens.decomposeTask",
     "onCommand:tokenLens.measureContext",
@@ -64,6 +67,18 @@
       {
         "command": "tokenLens.openInterventions",
         "title": "Code Buddy: Open Intervention Log"
+      },
+      {
+        "command": "tokenLens.openTelemetry",
+        "title": "Code Buddy: Open Raw Task Telemetry"
+      },
+      {
+        "command": "tokenLens.replayTelemetryTask",
+        "title": "Code Buddy: Replay Task Telemetry"
+      },
+      {
+        "command": "tokenLens.openHumanRetryEvidence",
+        "title": "Code Buddy: Open Human Retry Evidence"
       },
       {
         "command": "tokenLens.reviewPrompt",
@@ -306,6 +321,58 @@
           "maximum": 5,
           "description": "Number of implementation-tool denials used to redirect the agent to Code Buddy tools before an explicit controlled-fallback approval is offered."
         },
+        "tokenLens.telemetry.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write the versioned, local task telemetry event stream used for lifecycle replay and future learning datasets. Telemetry failures never block coding."
+        },
+        "tokenLens.telemetry.level": {
+          "type": "string",
+          "enum": ["minimal", "standard", "diagnostic"],
+          "default": "standard",
+          "description": "Telemetry detail level. Standard stores interaction and outcome metadata without raw prompts, source, terminal output, or tool arguments."
+        },
+        "tokenLens.telemetry.captureRawContent": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow raw prompt capture only while telemetry level is diagnostic. Keep disabled for normal use."
+        },
+        "tokenLens.telemetry.directory": {
+          "type": "string",
+          "default": ".code-buddy/telemetry",
+          "description": "Local root for versioned raw task telemetry, derived task records, and telemetry state."
+        },
+        "tokenLens.humanRetry.minimumComparableTasks": {
+          "type": "number",
+          "default": 8,
+          "minimum": 2,
+          "description": "Loose cold-start gate: comparable completed tasks required before a personalized human-retry recommendation can be considered."
+        },
+        "tokenLens.humanRetry.minimumTasksPerFactor": {
+          "type": "number",
+          "default": 5,
+          "minimum": 3,
+          "description": "Minimum complete observations required to estimate a factor's retry association."
+        },
+        "tokenLens.humanRetry.reliabilityThreshold": {
+          "type": "number",
+          "default": 0.6,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum local evidence-model reliability required before Code Buddy presents a personalized recommendation."
+        },
+        "tokenLens.humanRetry.minimumEffectSize": {
+          "type": "number",
+          "default": 0.15,
+          "minimum": 0,
+          "description": "Minimum absolute standardized log rate-ratio used to consider an observed association actionable."
+        },
+        "tokenLens.humanRetry.overdispersionThreshold": {
+          "type": "number",
+          "default": 1.5,
+          "minimum": 1,
+          "description": "Pearson dispersion threshold above which the local count model falls back from Poisson to negative binomial."
+        },
         "tokenLens.context.estimatedContextCapacityTokens": {
           "type": "number",
           "default": 40000,
@@ -347,7 +414,7 @@
   "scripts": {
     "compile": "tsc -p tsconfig.json",
     "build": "npm run compile",
-    "test": "npm run build && node --test test/hook.test.js test/pending_handoff.test.js test/code_buddy.test.js test/rearchitecture.test.js test/project_policy.test.js test/governance.test.js test/documentation.test.js",
+    "test": "npm run build && node --test test/hook.test.js test/telemetry.test.js test/pending_handoff.test.js test/code_buddy.test.js test/rearchitecture.test.js test/project_policy.test.js test/governance.test.js test/documentation.test.js",
     "watch": "tsc -p tsconfig.json --watch"
   },
   "devDependencies": {

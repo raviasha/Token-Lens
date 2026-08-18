@@ -76,15 +76,67 @@ All generated data is workspace-local:
 .code-buddy/
 ├── codex-session.jsonl
 ├── interventions.jsonl
-└── .state/
-    ├── preflight/
-    └── pending-fresh-handoff.json
+├── .state/
+│   ├── preflight/
+│   └── pending-fresh-handoff.json
+└── telemetry/
+    ├── raw/
+    │   └── events-YYYY-MM-DD.jsonl
+    └── .state/
+        └── telemetry-state.json
 
 Code Buddy.md
 Code Buddy Analytics.md
 ```
 
 At `Stop`, the hook captures available transcript context and invokes `scripts/code_buddy.py end_turn`. The analytics script derives worktree deltas, turn outcomes, transcript/context snapshots, intervention counts, and conservative Estimated Context Pressure, then atomically refreshes both Markdown reports.
+
+## Task telemetry pipeline
+
+Both runtime hooks call the same fail-open telemetry implementation. It maps
+platform observations into a schema-`1.1` envelope and validates the envelope
+before appending it to the daily raw JSONL file:
+
+```text
+Copilot / Codex hook
+  -> privacy-safe event builder
+  -> task + interaction attribution
+  -> schema validation
+  -> immutable daily JSONL
+  -> replay or rebuildable human-retry task record
+  -> comparable completed-task cohort
+  -> Poisson or overdispersion-triggered negative-binomial analysis
+  -> gated model feedback on every submitted prompt
+```
+
+Task attribution is per session, so simultaneous sessions retain their own
+active task while a task can still continue into a fresh session. The local
+state contains hashed semantic terms rather than prompt text. Preflight tool
+results are normalized with their active thresholds; recommendation decisions
+retain recommendation IDs; compaction, handoff, usage, test, build, Git, and
+worktree signals are attached where observable. Missing measurements remain
+null.
+
+The exact human-retry detector requires a same-objective human correction, a
+prior material attempt, and a subsequent material attempt. Broad
+`retry_detected` remains compatible but is not the analytical count.
+Clarification, extension, scope change, new-task work, and multiple internal
+agent attempts in one interaction are excluded.
+
+`telemetry.cjs list|replay|aggregate|validate|dataset|analyze|recommendation|report`
+reads only raw events. Derived
+task records are therefore disposable and can be rebuilt after feature or
+outcome definitions evolve. Readers accept mixed schema `1.0`/`1.1` streams;
+legacy candidates are confirmed only when metadata proves attempt evidence on
+both sides. No raw event is rewritten.
+
+The analytical cohort is restricted to completed tasks with the same task type
+and initial complexity. Reliability combines sample sufficiency, feature
+completeness, confirmed-outcome evidence, model coverage, and test/build
+guardrail coverage. Advice additionally needs an effect in the hypothesized
+direction and no observed quality regression. Every prompt gets a feedback
+line, but cold-start and weak evidence produce an explicit no-recommendation
+message. All wording is associative, not causal.
 
 ## Policy resolution
 
@@ -111,6 +163,7 @@ thresholds:
 ## Security and privacy boundaries
 
 - Logs are written locally and common secrets are redacted.
+- Standard task telemetry stores derived metadata without prompt/response text, source, terminal output, tool arguments, local paths, usernames, or hostnames.
 - No source code, prompts, handoffs, or model responses are uploaded to a Code Buddy service.
 - Provider-reported usage is not treated as complete active-context utilization unless the provider says it is complete.
 - Estimated Context Pressure is clearly labelled as an estimate, not billing data.
@@ -124,6 +177,8 @@ thresholds:
 - Codex hook: `codex-plugin/plugins/code-buddy/hooks/code_buddy_hook.cjs`
 - MCP server: `codex-plugin/plugins/code-buddy/scripts/code_buddy_mcp.py`
 - Analytics: `codex-plugin/plugins/code-buddy/scripts/code_buddy.py`
+- Task telemetry and replay: `telemetry.cjs` and `codex-plugin/plugins/code-buddy/scripts/telemetry.cjs`
+- Telemetry schemas and dictionary: `docs/telemetry-schema-v1.1.json`, legacy `docs/telemetry-schema-v1.json`, and `docs/telemetry-data-dictionary.md`
 - Shared policy parser: `codex-plugin/plugins/code-buddy/scripts/project_policy.py`
 - VS Code language-model tools: `src/ai/tools.ts`
 - VS Code managed instructions: `src/agentInstructions.ts`

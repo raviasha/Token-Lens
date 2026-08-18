@@ -27,6 +27,13 @@ test('project policy overrides only documented YAML values over the legacy polic
   assert.equal(result.policy.promptReview.interventionThreshold, 90);
   assert.equal(result.policy.context.warningThreshold, 0.50);
   assert.equal(result.policy.context.criticalThreshold, DEFAULT_POLICY.context.criticalThreshold);
+  assert.deepEqual(result.policy.measurement.humanRetries, {
+    minimumComparableTasks: 6,
+    minimumTasksPerFactor: 4,
+    reliabilityThreshold: 0.55,
+    minimumEffectSize: 0.1,
+    overdispersionThreshold: 1.25
+  });
   assert.equal(result.diagnostics.length, 0);
 });
 

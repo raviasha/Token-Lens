@@ -36,6 +36,13 @@ thresholds:
   sessionFit:
     recommendFreshTaskAtOrAbove: 75
     fallbackLexicalOverlapBelow: 0.20
+measurement:
+  humanRetries:
+    minimumComparableTasks: 8
+    minimumTasksPerFactor: 5
+    reliabilityThreshold: 0.60
+    minimumEffectSize: 0.15
+    overdispersionThreshold: 1.50
 ```
 
 Code Buddy starts every meaningful coding task with one compact health line:
@@ -48,14 +55,34 @@ recommendation always offers **Curate for a fresh chat** or **Continue unchanged
 back independently, and VS Code’s existing `tokenLens.*` settings remain the
 fallback when YAML omits a value.
 
+After every submitted prompt, Code Buddy also asks the coding model to show an
+exact local evidence line beginning `Personalized recommendation —`. During
+cold start this explicitly says that there is not enough data. Advice appears
+only after the configurable comparable-task and reliability gates pass, and is
+worded as an observed association rather than a causal or personalized claim.
+
+## What's new in v0.9.0
+
+- Every prompt now receives an explicit model-presented personalized-feedback
+  status, including a clear **Not enough data yet** message during cold start.
+- Schema-1.1 local telemetry distinguishes human-requested corrective retries
+  from clarifications, extensions, new tasks, and agent-internal attempts.
+- Comparable-task evidence uses descriptive comparisons and interpretable
+  Poisson analysis, with negative-binomial fallback for overdispersion and
+  test/build quality guardrails.
+- VS Code adds raw telemetry, task replay, and human-retry evidence commands;
+  Codex adds the read-only `analyze_human_retries` tool.
+- Recommendation exposure, acceptance, and observed application remain
+  separately linkable, local, metadata-derived, and fail-open.
+
 ## Download
 
-Download the latest release from the [Code Buddy v0.8.4 release page](https://github.com/raviasha/Token-Lens/releases/tag/v0.8.4):
+Download the latest release from the [Code Buddy v0.9.0 release page](https://github.com/raviasha/Token-Lens/releases/tag/v0.9.0):
 
-- `code-buddy-0.8.4.vsix` — VS Code extension installer.
-- `code-buddy-0.8.4-SHA256SUMS.txt` — integrity checksum.
+- `code-buddy-0.9.0.vsix` — VS Code extension installer.
+- `code-buddy-0.9.0-SHA256SUMS.txt` — integrity checksum.
 
-The v0.8.4 SHA-256 value published in the checksum file must match the downloaded VSIX.
+The v0.9.0 SHA-256 value published in the checksum file must match the downloaded VSIX.
 
 ### Codex plugin
 
@@ -81,13 +108,67 @@ whether Code Buddy runs in future tasks.
 
 Hook and transcript availability can vary by Copilot surface and rollout.
 
+## Task telemetry and lifecycle replay
+
+Code Buddy writes an additive, versioned task event stream under:
+
+```text
+.code-buddy/
+  telemetry/
+    raw/
+      events-YYYY-MM-DD.jsonl
+    .state/
+```
+
+Schema `1.1` keeps `task_id`, `session_id`, and `interaction_id` separate. It
+records task attribution and state, all four preflight scores and their active
+thresholds, recommendation choices, follow-up and retry signals, context and
+compaction checkpoints, exposed AI usage, and metadata-only tool, file, Git,
+test, and build outcomes. Existing session and intervention logs remain
+unchanged.
+
+The default `standard` level stores behavioral metadata rather than source
+code, prompt/response text, terminal output, or tool arguments. File identities
+and repository roots are hashed. Raw prompts require both `diagnostic` level
+and the separate `tokenLens.telemetry.captureRawContent` opt-in, and are still
+passed through secret redaction. Telemetry is
+local, validated before append, and fail-open: capture errors never stop the
+coding agent.
+
+Use **Code Buddy: Open Raw Task Telemetry** to reveal the daily JSONL files and
+**Code Buddy: Replay Task Telemetry** to reconstruct a task by ID. From this
+source checkout, the same replay and rebuild operations are available as:
+
+```bash
+node telemetry.cjs list "$PWD"
+node telemetry.cjs replay "$PWD" task_...
+node telemetry.cjs aggregate "$PWD" task_...
+node telemetry.cjs validate "$PWD"
+node telemetry.cjs dataset "$PWD"
+node telemetry.cjs analyze "$PWD" task_...
+node telemetry.cjs recommendation "$PWD" task_...
+node telemetry.cjs report "$PWD" task_...
+```
+
+Use **Code Buddy: Open Human Retry Evidence** for the same Markdown evidence
+report in VS Code. The `analyze_human_retries` MCP tool exposes the structured
+read-only result to Codex.
+
+See the [schema 1.1 specification](docs/telemetry-schema-v1.1.json), [legacy
+schema 1.0 specification](docs/telemetry-schema-v1.json), [data
+dictionary](docs/telemetry-data-dictionary.md), [raw-log
+audit](docs/telemetry-raw-log-audit.md), and [synthetic acceptance
+dataset](docs/examples/telemetry-events-v1.jsonl). The [Phase 1 human-retry
+measurement guide](docs/human-retry-measurement.md) documents exact boundaries,
+evidence gates, reprocessing, rollout, and non-goals.
+
 ## Install, upgrade, and remove
 
 ### Install
 
-1. Download `code-buddy-0.8.4.vsix` and its checksum.
+1. Download `code-buddy-0.9.0.vsix` and its checksum.
 2. In VS Code, open **Extensions → Install from VSIX**.
-3. Select `code-buddy-0.8.4.vsix`.
+3. Select `code-buddy-0.9.0.vsix`.
 4. Reload the VS Code window.
 5. Open the workspace where Code Buddy should operate.
 6. Run **Code Buddy: Install Copilot Hooks** from the Command Palette.
@@ -130,8 +211,9 @@ For a normal meaningful coding prompt, the expected sequence is:
 6. If the agent attempts an edit, terminal command, file creation, or another non-observational action too early, `PreToolUse` denies it and records `preflight.gate_denied`.
 7. Successful or safely failed Code Buddy evaluations write independent completion markers. Once all four required markers exist, Code Buddy records `preflight.completed` and a factual `health.check_completed` or `health.check_limited` event.
 8. Copilot implementation continues normally.
-9. When Copilot emits `Stop`, Code Buddy captures available transcript events, compares the worktree, records `turn.outcome` and `context.load_snapshot`, and refreshes both Markdown reports.
-10. When live observation or the completed-turn snapshot crosses a context threshold, the extension verifies the measurement and offers context action only if the state remains warning or critical.
+9. Every hook observation also contributes metadata to the schema-1.1 task event stream, where it can be replayed or re-aggregated independently of the original conversation; existing schema-1.0 events remain readable.
+10. When Copilot emits `Stop`, Code Buddy captures available transcript events, compares the worktree, records `turn.outcome` and `context.load_snapshot`, and refreshes both Markdown reports.
+11. When live observation or the completed-turn snapshot crosses a context threshold, the extension verifies the measurement and offers context action only if the state remains warning or critical.
 
 Small control replies such as `yes`, `continue`, `run it`, `retry`, or `cancel` record `preflight.skipped` and do not require semantic evaluation.
 
@@ -153,6 +235,7 @@ The workspace hook configuration subscribes to all events below. Every supplied 
 | `SubagentStop` | `subagent.completed` | Records the subagent response and stop reason and includes observed response text in context estimates. |
 | `ErrorOccurred` | `error.occurred` | Records the redacted error, context, and recoverability signal. Hook logging remains fail-open. |
 | `PreCompact` | `context.compacted` | Records that Copilot is about to compact context and any supplied trigger/custom instructions. It does not claim access to hidden compaction behavior. |
+| `PostCompact` | `context.compaction_completed` | Records supplied after-compaction metadata and closes the task telemetry compaction checkpoint. Unavailable before/after values remain null. |
 
 Unknown hook events are retained as `hook.event` rather than discarded.
 
@@ -343,6 +426,8 @@ The defaults are a 40,000 estimated-token denominator, warning at 70%, and criti
 | `.code-buddy/copilot-session.jsonl` | Schema-v2 hook, transcript, preflight, worktree, and context records. |
 | `.code-buddy/interventions.jsonl` | Schema-v1 semantic evaluations, governance triggers, choices, fallbacks, and failures. |
 | `.code-buddy/.state/` | Local transcript deduplication, worktree baseline, and per-prompt preflight markers. |
+| `.code-buddy/telemetry/raw/` | Immutable daily schema-1.1 task event stream used for replay and derived datasets; schema 1.0 remains readable. |
+| `.code-buddy/telemetry/.state/` | Privacy-safe task attribution, interaction, sequence, recommendation, and compaction state. |
 | `Code Buddy.md` | Concise next-prompt feedback refreshed after a completed main-agent turn. |
 | `Code Buddy Analytics.md` | Detailed session, context, intervention, event, and observed worktree report. |
 
@@ -354,7 +439,7 @@ Every session record includes a stable `eventId`, `recordType`, `sessionId`, tim
 
 ### Direct hook records
 
-`session.started`, `session.ended`, `user.prompt`, `prompt.transformed`, `tool.started`, `tool.completed`, `tool.failed`, `agent.stopped`, `subagent.started`, `subagent.completed`, `error.occurred`, `context.compacted`, and fallback `hook.event`.
+`session.started`, `session.ended`, `user.prompt`, `prompt.transformed`, `tool.started`, `tool.completed`, `tool.failed`, `agent.stopped`, `subagent.started`, `subagent.completed`, `error.occurred`, `context.compacted`, `context.compaction_completed`, and fallback `hook.event`.
 
 ### Preflight records
 
@@ -406,6 +491,9 @@ VS Code **Chat Debug** may show internal provider calls as `copilotLanguageModel
 | **Code Buddy: Open Hook Configuration** | Opens `.github/hooks/token-lens.json`. |
 | **Code Buddy: Open Agent Instructions** | Opens `.github/copilot-instructions.md`. |
 | **Code Buddy: Open Intervention Log** | Opens `.code-buddy/interventions.jsonl`. |
+| **Code Buddy: Open Raw Task Telemetry** | Reveals `.code-buddy/telemetry/raw/`. |
+| **Code Buddy: Replay Task Telemetry** | Reconstructs one task lifecycle from raw events in a Markdown editor. |
+| **Code Buddy: Open Human Retry Evidence** | Opens the local task-cohort reliability and association report. |
 | **Code Buddy: Review Prompt** | Runs Prompt Reviewer manually and copies a selected enhancement. |
 | **Code Buddy: Decompose Task** | Runs Task Decomposer manually and displays strategies/steps. |
 | **Code Buddy: Measure Context** | Displays the best available actual or estimated context measurement. |
@@ -433,6 +521,15 @@ Settings remain under the `tokenLens` namespace for upgrade compatibility.
 | `tokenLens.taskDecomposition.interventionThreshold` | `65` | Complexity scores at or above this value recommend decomposition. |
 | `tokenLens.preflight.enforceBeforeImplementation` | `true` | Enables deterministic preflight enforcement. |
 | `tokenLens.preflight.denialsBeforeFallback` | `1` | Denials before an explicit controlled-fallback approval is offered; constrained to 1–5. |
+| `tokenLens.telemetry.enabled` | `true` | Enables the local schema-1.1 task event stream. Capture remains fail-open. |
+| `tokenLens.telemetry.level` | `standard` | Selects `minimal`, `standard`, or `diagnostic` event detail. |
+| `tokenLens.telemetry.captureRawContent` | `false` | Allows raw prompts only when level is also `diagnostic`. |
+| `tokenLens.telemetry.directory` | `.code-buddy/telemetry` | Raw event, derived-data, and attribution-state root. |
+| `tokenLens.humanRetry.minimumComparableTasks` | `8` | Completed same-type/same-complexity tasks required before advice can be considered. |
+| `tokenLens.humanRetry.minimumTasksPerFactor` | `5` | Complete observations required to fit one factor. |
+| `tokenLens.humanRetry.reliabilityThreshold` | `0.60` | Minimum combined local evidence score before advice is shown. |
+| `tokenLens.humanRetry.minimumEffectSize` | `0.15` | Minimum absolute count-model coefficient for advice. |
+| `tokenLens.humanRetry.overdispersionThreshold` | `1.50` | Pearson dispersion above which analysis falls back from Poisson to negative binomial. |
 | `tokenLens.context.estimatedContextCapacityTokens` | `40000` | Denominator used only for Estimated Context Pressure; minimum 1,000. |
 | `tokenLens.context.warningThreshold` | `0.70` | Estimated-pressure ratio that triggers warning behavior. |
 | `tokenLens.context.criticalThreshold` | `0.85` | Estimated-pressure ratio that triggers critical behavior; never lower than warning. |
@@ -457,7 +554,7 @@ Reload VS Code after changing runtime policies. Run **Code Buddy: Install Copilo
 
 ## Privacy, attribution, and limitations
 
-- Code Buddy has no separate cloud service or telemetry pipeline. JSONL records, state, and reports are written locally to the workspace.
+- Code Buddy has no cloud telemetry service. Session logs, the task telemetry pipeline, state, and reports stay local to the workspace.
 - Semantic tools use the active VS Code language-model provider. Prompts and relevant context supplied to those tools are therefore processed under that provider's terms.
 - Redaction is conservative but cannot guarantee removal of every sensitive value. Review logs before sharing them.
 - Transcript capture can contain conversation content. Disable `tokenLens.captureTranscripts` for sensitive or large transcripts.
@@ -474,11 +571,11 @@ Reload VS Code after changing runtime policies. Run **Code Buddy: Install Copilo
 
 ### Code Buddy tools do not appear
 
-1. Confirm **Code Buddy 0.8.4** is installed.
+1. Confirm **Code Buddy 0.9.0** is installed.
 2. Reload VS Code.
 3. Run **Code Buddy: Install Copilot Hooks** in the active workspace.
 4. Open **Code Buddy: Open Agent Instructions** and confirm the marked governance section exists.
-5. Open **Code Buddy: Open Hook Configuration** and confirm its command points to the installed 0.8.4 extension directory.
+5. Open **Code Buddy: Open Hook Configuration** and confirm its command points to the installed 0.9.0 extension directory.
 6. Use a supported Copilot agent mode and submit a meaningful prompt rather than a control reply.
 
 ### New-session curation does not appear
@@ -524,4 +621,9 @@ npm install
 npm test
 ```
 
-The v0.8.4 suite covers hook/report regression behavior, worktree deltas, redaction, transcript deduplication, structured contracts, original-option preservation, user-visible choice presentation, provider measurement order, safe semantic fallbacks, deterministic preflight denial/completion/controlled fallback, meaningful-prompt filtering, same-session new-task classification, new-session carry-forward behavior, local intervention storage, and managed instruction merging/removal.
+The v0.9.0 suite covers hook/report regression behavior, worktree deltas,
+redaction, transcript deduplication, structured contracts, developer-controlled
+preflight and handoffs, schema-1.0/1.1 compatibility, exact human-retry
+boundaries, recommendation linkage, cold-start feedback, Poisson and
+negative-binomial analysis, quality guardrails, and VS Code/Codex runtime
+parity.
