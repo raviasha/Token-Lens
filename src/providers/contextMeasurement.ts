@@ -21,6 +21,25 @@ export interface ContextMeasurementProvider {
   resolve(input: ContextMeasurementInput, policy: CodeBuddyPolicy): MeasurementResolution | undefined;
 }
 
+export function formatContextHealthLineStatus(measurement: ContextEstimate, limitedEvidence = false): string {
+  if (limitedEvidence) {
+    return 'checked — limited evidence';
+  }
+  const state = measurement.thresholdState === 'unavailable' ? 'checked' : measurement.thresholdState;
+  const value = measurement.value.toLocaleString('en-US');
+  if (measurement.unit === 'tokens') {
+    if (typeof measurement.utilization === 'number' && typeof measurement.capacityTokens === 'number') {
+      const capacity = measurement.capacityTokens.toLocaleString('en-US');
+      return `${state} — ${value} / ${capacity} tokens (${(measurement.utilization * 100).toFixed(1)}% actual)`;
+    }
+    return `${state} — ${value} actual tokens; percentage unavailable`;
+  }
+  if (typeof measurement.utilization === 'number') {
+    return `${state} — ~${value} estimated tokens (${(measurement.utilization * 100).toFixed(1)}% estimated)`;
+  }
+  return `${state} — ~${value} estimated tokens`;
+}
+
 export class NativeInputMeasurementProvider implements ContextMeasurementProvider {
   public readonly method = 'api' as const;
   public resolve(input: ContextMeasurementInput): MeasurementResolution | undefined {
@@ -78,6 +97,7 @@ export class ContextMeasurementService {
           thresholdState: 'normal',
           terminology: 'Estimated Context Pressure'
         },
+        healthLineStatus: 'checked — limited evidence',
         providerId: 'unavailable',
         recommendation: 'none',
         availableActions: ['continue_unchanged'],
@@ -118,6 +138,7 @@ export class ContextMeasurementService {
       kind: 'context_measurement',
       status: 'ok',
       measurement,
+      healthLineStatus: formatContextHealthLineStatus(measurement),
       providerId: resolution.providerId,
       recommendation: thresholdState === 'critical' ? 'curate_or_start_fresh' : thresholdState === 'warning' ? 'consider_curation' : 'none',
       availableActions: thresholdState === 'normal' || thresholdState === 'unavailable'

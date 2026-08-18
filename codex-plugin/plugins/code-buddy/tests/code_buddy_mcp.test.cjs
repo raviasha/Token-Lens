@@ -141,6 +141,7 @@ test('context measurement automatically uses native Codex input tokens and model
   assert.equal(result.measurement.cachedInputTokens, 120_000);
   assert.equal(result.measurement.thresholdState, 'warning');
   assert.equal(result.measurement.terminology, 'Actual Context Utilization');
+  assert.equal(result.healthLineStatus, 'warning — 150,000 / 200,000 tokens (75.0% actual)');
 });
 
 test('context measurement keeps actual tokens but omits percent when Codex omits capacity', () => {
@@ -154,6 +155,7 @@ test('context measurement keeps actual tokens but omits percent when Codex omits
   assert.equal(result.measurement.capacity, null);
   assert.equal(result.measurement.utilization, null);
   assert.equal(result.measurement.thresholdState, 'unavailable');
+  assert.equal(result.healthLineStatus, 'checked — 8,000 actual tokens; percentage unavailable');
   assert.equal(result.recommendation, 'continue');
 });
 

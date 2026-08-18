@@ -30,6 +30,10 @@ task scope, context utilization, and session-fit health line. A fresh task creat
 curated context waits until the marked handoff is pasted or the developer
 submits exactly `Code Buddy: continue without curated context`.
 
+When native capacity is available, the context-utilization status includes
+current tokens, model-window tokens, and the actual percentage. If capacity is
+absent, it explicitly says that the percentage is unavailable.
+
 To update an existing installation, refresh the marketplace snapshot, reinstall
 the plugin, and restart Codex:
 

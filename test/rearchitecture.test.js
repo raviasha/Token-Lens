@@ -128,12 +128,14 @@ test('context measurement follows API then vision then estimate and labels estim
   assert.equal(result.measurement.terminology, 'Actual Context Utilization');
   assert.equal(result.measurement.utilization, 0.775);
   assert.equal(result.measurement.capacityTokens, 40_000);
+  assert.equal(result.healthLineStatus, 'warning — 31,000 / 40,000 tokens (77.5% actual)');
 
   const actualWithoutCapacity = service.measure({
     nativeMeasurement: { value: 31_000, unit: 'tokens', confidence: 'high', providerId: 'native-api' }
   });
   assert.equal(actualWithoutCapacity.measurement.utilization, undefined);
   assert.equal(actualWithoutCapacity.measurement.thresholdState, 'unavailable');
+  assert.equal(actualWithoutCapacity.healthLineStatus, 'checked — 31,000 actual tokens; percentage unavailable');
   assert.equal(actualWithoutCapacity.recommendation, 'none');
 
   const estimated = service.measure({
@@ -142,6 +144,7 @@ test('context measurement follows API then vision then estimate and labels estim
   assert.equal(estimated.measurement.method, 'estimate');
   assert.equal(estimated.measurement.unit, 'estimated_tokens');
   assert.equal(estimated.measurement.terminology, 'Estimated Context Pressure');
+  assert.equal(estimated.healthLineStatus, 'critical — ~35,000 estimated tokens (87.5% estimated)');
   assert.equal(estimated.recommendation, 'curate_or_start_fresh');
 
   const unavailable = service.measure({});
@@ -250,6 +253,8 @@ test('managed agent instructions enforce evaluation and developer control', () =
   assert.match(instructions, /#tool:codeBuddyContextMeasurement/);
   assert.match(instructions, /#tool:codeBuddySessionFit/);
   assert.match(instructions, /Code Buddy:/);
+  assert.match(instructions, /healthLineStatus/);
+  assert.match(instructions, /actual percentage/);
   assert.match(instructions, /Estimated Context Pressure/);
   assert.match(instructions, /Never silently rewrite/);
   assert.match(instructions, /Continue with the original/);

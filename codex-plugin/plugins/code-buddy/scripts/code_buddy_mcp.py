@@ -397,6 +397,24 @@ def decompose_task(arguments: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def context_health_line_status(measurement: dict[str, Any], limited_evidence: bool = False) -> str:
+    if limited_evidence:
+        return "checked — limited evidence"
+    threshold = measurement.get("thresholdState")
+    state = "checked" if threshold == "unavailable" else str(threshold or "checked")
+    value = int(measurement.get("value") or 0)
+    unit = measurement.get("unit")
+    utilization = measurement.get("utilization")
+    capacity = measurement.get("capacity")
+    if unit == "tokens":
+        if isinstance(utilization, (int, float)) and isinstance(capacity, (int, float)) and capacity > 0:
+            return f"{state} — {value:,} / {int(capacity):,} tokens ({utilization:.1%} actual)"
+        return f"{state} — {value:,} actual tokens; percentage unavailable"
+    if isinstance(utilization, (int, float)):
+        return f"{state} — ~{value:,} estimated tokens ({utilization:.1%} estimated)"
+    return f"{state} — ~{value:,} estimated tokens"
+
+
 def estimate_context(arguments: dict[str, Any]) -> dict[str, Any]:
     thresholds = policy_for(arguments)["thresholds"]["estimatedContextPressure"]
     capacity_tokens = thresholds["capacityTokens"]
@@ -451,6 +469,7 @@ def estimate_context(arguments: dict[str, Any]) -> dict[str, Any]:
             "kind": "context_measurement",
             "status": "ok",
             "measurement": measurement,
+            "healthLineStatus": context_health_line_status(measurement),
             "recommendation": "curate_or_start_fresh" if threshold in {"warning", "critical"} else "continue",
         }
         append_intervention(arguments, "context.measured", result)
@@ -473,11 +492,13 @@ def estimate_context(arguments: dict[str, Any]) -> dict[str, Any]:
         utilization = value / capacity_tokens
         confidence = "low"
     threshold = "critical" if utilization >= critical_at else "warning" if utilization >= warning_at else "normal"
+    measurement = {"method": "estimate", "value": value, "unit": "estimated_tokens", "utilization": round(utilization, 4), "confidence": confidence, "providerId": "code-buddy-local-log", "terminology": "Estimated Context Pressure", "thresholdState": threshold, "estimatorVersion": "code_buddy_context_estimator_v2"}
     result = {
         "contractVersion": CONTRACT_VERSION,
         "kind": "context_measurement",
         "status": "ok" if records else "fallback",
-        "measurement": {"method": "estimate", "value": value, "unit": "estimated_tokens", "utilization": round(utilization, 4), "confidence": confidence, "providerId": "code-buddy-local-log", "terminology": "Estimated Context Pressure", "thresholdState": threshold, "estimatorVersion": "code_buddy_context_estimator_v2"},
+        "measurement": measurement,
+        "healthLineStatus": context_health_line_status(measurement, limited_evidence=not records),
         "recommendation": "curate_or_start_fresh" if threshold in {"warning", "critical"} else "continue",
         "limitation": "No matching native Codex token_count event was available. This fallback is an estimate from observable local events, not a billing value.",
     }
@@ -689,7 +710,7 @@ SESSION = {"type": "string", "description": "Optional Codex session/thread id wh
 TOOLS = [
     tool("review_prompt", "Evaluate a meaningful coding prompt before implementation. Pass an optional modelAssessment when you have prepared a semantic assessment; Code Buddy validates it, preserves the original prompt, and falls back safely when absent. If intervention is recommended and no option is selected, list every option in the normal user-visible response instead of relying on tool output or Thinking.", ["workspace", "prompt"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "prompt": {"type": "string"}, "relevantContext": {"type": "array", "items": {"type": "string"}}, "modelAssessment": {"type": "object", "description": "Optional Codex semantic review with score, dimensions, reasons, issues, interventionRecommended, suggestions, and options."}}),
     tool("decompose_task", "Assess task complexity and provide an optional, dependency-ordered strategy while preserving the original task option. Pass modelAssessment when a Codex semantic assessment has been prepared. If decomposition is recommended, list the original task and every strategy in the normal user-visible response instead of relying on tool output or Thinking.", ["workspace", "task"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "task": {"type": "string"}, "relevantContext": {"type": "array", "items": {"type": "string"}}, "modelAssessment": {"type": "object", "description": "Optional Codex semantic assessment with complexityScore, reasons, decompositionRecommended, and strategies."}}),
-    tool("measure_context", "Read the latest native Codex token_count event for the task and report input-token utilization as a percentage of the model context window when available; fall back to an explicitly labeled estimate.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION, "nativeMeasurement": {"type": "object", "properties": {"value": {"type": "number", "minimum": 0}, "capacity": {"type": "number", "minimum": 1}, "utilization": {"type": "number", "minimum": 0}, "confidence": {"type": "string"}, "providerId": {"type": "string"}}, "required": ["value"]}}),
+    tool("measure_context", "Read the latest native Codex token_count event for the task. Copy healthLineStatus verbatim into the context-utilization slot; it includes current tokens, model-window tokens, and percentage when capacity is available, or an explicitly labeled fallback.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION, "nativeMeasurement": {"type": "object", "properties": {"value": {"type": "number", "minimum": 0}, "capacity": {"type": "number", "minimum": 1}, "utilization": {"type": "number", "minimum": 0}, "confidence": {"type": "string"}, "providerId": {"type": "string"}}, "required": ["value"]}}),
     tool("assess_session_fit", "Assess whether the current meaningful coding request belongs in this task or merits a developer-controlled fresh-task handoff. It never creates a task automatically. If a fresh-task choice is recommended, show both options in the normal user-visible response instead of relying on tool output or Thinking.", ["workspace", "prompt"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "prompt": {"type": "string"}, "previousPrompt": {"type": "string"}, "relevantContext": {"type": "array", "items": {"type": "string"}}, "modelAssessment": {"type": "object", "description": "Optional Codex semantic assessment with newTaskLikelihood, confidence, and reason."}}),
     tool("curate_context", "Create a previewable minimum-sufficient handoff only after the developer chooses curation. Set developerConfirmed to true only after the developer chose fresh-task curation; that creates a marked handoff that must be pasted into the fresh task. Pass modelBundle when a Codex semantic curation has been prepared.", ["workspace", "targetTask", "mode"], {"workspace": WORKSPACE, "sessionId": SESSION, "targetTask": {"type": "string"}, "mode": {"type": "string", "enum": ["fresh_task", "continue_current"]}, "developerConfirmed": {"type": "boolean", "description": "True only after the developer explicitly chose fresh-task curation."}, "conversationHistory": {"type": "array", "items": {"type": "string"}}, "knownDecisions": {"type": "array", "items": {"type": "string"}}, "relevantFiles": {"type": "array", "items": {"type": "string"}}, "constraints": {"type": "array", "items": {"type": "string"}}, "implementationState": {"type": "array", "items": {"type": "string"}}, "completedWork": {"type": "array", "items": {"type": "string"}}, "remainingWork": {"type": "array", "items": {"type": "string"}}, "knownIssues": {"type": "array", "items": {"type": "string"}}, "validation": {"type": "array", "items": {"type": "string"}}, "openQuestions": {"type": "array", "items": {"type": "string"}}, "pinnedItems": {"type": "array", "items": {"type": "string"}}, "excludedHistory": {"type": "array", "items": {"type": "string"}}, "modelBundle": {"type": "object", "description": "Optional Codex semantic curation with taskObjective, items, suggestedStartingInstruction, and excludedHistory."}}),
     tool("session_status", "Return local Code Buddy log and report paths for the current workspace.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION}, True),

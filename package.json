@@ -143,7 +143,7 @@
         "toolReferenceName": "codeBuddyContextMeasurement",
         "icon": "$(dashboard)",
         "userDescription": "Show actual input-token context utilization when Codex exposes it, with an explicitly labeled estimate as fallback.",
-        "modelDescription": "Use a native Codex token-count snapshot when Code Buddy has one, reporting input tokens as a percentage of the model context window when capacity is available. Otherwise use permitted visual inspection or an explicitly labeled estimate. Never derive a percentage from cumulative total usage.",
+        "modelDescription": "Use a native Codex token-count snapshot when Code Buddy has one. Copy the returned healthLineStatus verbatim into the context-utilization slot; when capacity is available it contains current tokens, model-window tokens, and the actual percentage. Otherwise use permitted visual inspection or an explicitly labeled estimate. Never derive a percentage from cumulative total usage.",
         "inputSchema": {
           "type": "object",
           "properties": {

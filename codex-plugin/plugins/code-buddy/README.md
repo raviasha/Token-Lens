@@ -11,7 +11,9 @@ switch. Codex saves this choice for tasks created after the change.
 - **Enabled:** every meaningful coding request automatically receives Code
   Buddy prompt quality, task scope, context-utilization, and session-fit
   checks. Substantive work starts with a compact health line; only the affected
-  status changes when a recommendation is available.
+  status changes when a recommendation is available. With native capacity, the
+  context status always contains current tokens, model-window tokens, and the
+  actual percentage.
 - **Disabled:** new tasks receive no Code Buddy skill, MCP tools, hooks, local
   logs, or interventions.
 

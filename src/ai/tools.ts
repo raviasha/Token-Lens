@@ -193,6 +193,7 @@ class ContextMeasurementTool implements vscode.LanguageModelTool<ContextMeasurem
         confidence: result.measurement.confidence,
         thresholdState: result.measurement.thresholdState,
         terminology: result.measurement.terminology,
+        healthLineStatus: result.healthLineStatus,
         recommendation: result.recommendation,
         failure: result.failure ?? null
       }

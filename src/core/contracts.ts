@@ -160,6 +160,7 @@ export interface ContextMeasurementResult {
   kind: 'context_measurement';
   status: 'ok' | 'fallback';
   measurement: ContextEstimate;
+  healthLineStatus: string;
   providerId: string;
   recommendation: 'none' | 'consider_curation' | 'curate_or_start_fresh';
   availableActions: Array<'start_fresh' | 'curate_current' | 'continue_unchanged'>;

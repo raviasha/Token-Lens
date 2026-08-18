@@ -786,7 +786,7 @@ function automaticPreflightContext(state) {
     `For this meaningful coding request, invoke ${required.join(' and ')} before substantive implementation.`,
     'If any MCP tool is deferred, use tool_search to load it before continuing.',
     'Pass the unchanged user request and a concise semantic modelAssessment to prompt review, task decomposition, and session fit. Measure context from available local evidence.',
-    'Read all four results. Before substantive work, begin exactly: Code Buddy: prompt quality <status> · task scope <status> · context utilization <status> · session fit <status>. Use checked — limited evidence when native context data and a useful fallback are unavailable.',
+    'Read all four results. Before substantive work, begin exactly: Code Buddy: prompt quality <status> · task scope <status> · context utilization <status> · session fit <status>. Copy measure_context.healthLineStatus verbatim into the context utilization slot. When native capacity exists, it must include current tokens, model-window tokens, and the actual percentage; a token count alone is incomplete. Use checked — limited evidence when native context data and a useful fallback are unavailable.',
     'Do not silently rewrite, submit, curate, or discard the developer request or context.'
   ].join(' ');
 }

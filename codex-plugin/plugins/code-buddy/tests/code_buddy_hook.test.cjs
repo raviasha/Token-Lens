@@ -56,6 +56,8 @@ test('injects automatic Code Buddy preflight for a meaningful request', () => {
   assert.match(context, /mcp__code_buddy__measure_context/);
   assert.match(context, /mcp__code_buddy__assess_session_fit/);
   assert.match(context, /Code Buddy:/);
+  assert.match(context, /measure_context\.healthLineStatus/);
+  assert.match(context, /actual percentage/);
   assert.match(context, /Personalized recommendation — Not enough data/);
 });
 

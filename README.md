@@ -47,6 +47,10 @@ measurement:
 
 Code Buddy starts every meaningful coding task with one compact health line:
 `prompt quality`, `task scope`, `context utilization`, and `session fit`.
+When native model capacity is available, the context slot includes current
+tokens, model-window tokens, and the actual percentage, for example
+`normal — 76,754 / 258,400 tokens (29.7% actual)`; a token count alone is not a
+complete status.
 Empty local context evidence is labeled **checked — limited evidence**;
 it is never presented as actual context use. Raise `enhanceBelow` for more
 prompt-enhancement suggestions; lower the other thresholds for stricter

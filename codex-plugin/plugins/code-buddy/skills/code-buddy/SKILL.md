@@ -35,7 +35,10 @@ that changes project state:
 
    Replace only the affected status with an action such as “enhancement
    available”, “decomposition available”, “checked — limited evidence”, or
-   “fresh task recommended”.
+   “fresh task recommended”. Copy `measure_context.healthLineStatus` verbatim
+   into the context-utilization slot. With native capacity, it includes current
+   tokens, model-window tokens, and the actual percentage; a token count alone
+   is incomplete.
 
 Small control replies such as `yes`, `continue`, `run it`, `retry`, or `cancel`
 do not require preflight.
