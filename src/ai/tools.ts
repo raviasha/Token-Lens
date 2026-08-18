@@ -157,7 +157,21 @@ class ContextMeasurementTool implements vscode.LanguageModelTool<ContextMeasurem
     const snapshot = await this.dependencies.currentSnapshot();
     const input: ContextMeasurementInput = {
       ...options.input,
-      estimate: options.input.estimate ?? (snapshot ? {
+      nativeMeasurement: options.input.nativeMeasurement ?? (snapshot?.estimate.method === 'api' ? {
+        value: snapshot.estimate.value,
+        unit: 'tokens',
+        confidence: snapshot.estimate.confidence,
+        providerId: snapshot.estimate.providerId ?? 'codex-cli-token-count',
+        capacityTokens: snapshot.estimate.capacityTokens,
+        utilization: snapshot.estimate.utilization,
+        measurementTimestamp: snapshot.estimate.measurementTimestamp,
+        cachedInputTokens: snapshot.estimate.cachedInputTokens,
+        cacheWriteInputTokens: snapshot.estimate.cacheWriteInputTokens,
+        outputTokens: snapshot.estimate.outputTokens,
+        reasoningTokens: snapshot.estimate.reasoningTokens,
+        totalTokens: snapshot.estimate.totalTokens
+      } : undefined),
+      estimate: options.input.estimate ?? (snapshot?.estimate.method === 'estimate' ? {
         value: snapshot.estimate.value,
         unit: 'estimated_tokens',
         utilization: snapshot.estimate.utilization,

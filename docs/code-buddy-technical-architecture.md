@@ -44,7 +44,10 @@ Codex calls the local MCP server through the plugin's `python3 ./scripts/code_bu
 
 - `review_prompt`: scores goal clarity, scope, context, constraints, acceptance criteria, and validation. It always retains an explicit original-prompt option.
 - `decompose_task`: evaluates complexity and can return dependency-ordered strategies. The original task remains an option.
-- `measure_context`: prefers a complete native measurement when supplied; otherwise returns an explicitly labelled Estimated Context Pressure fallback based on locally observed records.
+- `measure_context`: automatically reads the newest matching Codex
+  `token_count` event, prefers an explicitly supplied native measurement on
+  other surfaces, and otherwise returns an explicitly labelled Estimated
+  Context Pressure fallback based on locally observed records.
 - `assess_session_fit`: estimates whether the prompt continues the current task or merits a developer-controlled fresh task.
 - `curate_context`: creates a minimum-sufficient handoff containing decisions, constraints, files, implementation state, completed/remaining work, issues, and validation.
 - `session_status`: reports local log, report, and state paths.
@@ -89,7 +92,20 @@ Code Buddy.md
 Code Buddy Analytics.md
 ```
 
-At `Stop`, the hook captures available transcript context and invokes `scripts/code_buddy.py end_turn`. The analytics script derives worktree deltas, turn outcomes, transcript/context snapshots, intervention counts, and conservative Estimated Context Pressure, then atomically refreshes both Markdown reports.
+At `Stop`, the hook captures available transcript context and invokes
+`scripts/code_buddy.py end_turn`. The analytics script reads the latest
+completed native Codex token event when available, derives worktree deltas,
+turn outcomes, context snapshots, intervention counts, and a conservative
+fallback estimate, then atomically refreshes both Markdown reports.
+
+The native reader scans local `~/.codex/sessions` rollout JSONL (or
+`$CODEX_HOME/sessions`) by session ID or workspace. It returns only token
+metadata. Current utilization is
+`last_token_usage.input_tokens / model_context_window`; cumulative
+`total_token_usage` is preserved for later cost/burden analysis but is never
+used as current context pressure. The read is local and does not invoke the
+model. If capacity is missing, actual input tokens remain available while the
+percentage and threshold state are unavailable.
 
 ## Task telemetry pipeline
 
@@ -165,8 +181,11 @@ thresholds:
 - Logs are written locally and common secrets are redacted.
 - Standard task telemetry stores derived metadata without prompt/response text, source, terminal output, tool arguments, local paths, usernames, or hostnames.
 - No source code, prompts, handoffs, or model responses are uploaded to a Code Buddy service.
-- Provider-reported usage is not treated as complete active-context utilization unless the provider says it is complete.
-- Estimated Context Pressure is clearly labelled as an estimate, not billing data.
+- Native Codex `token_count` input usage is treated as actual runtime context
+  metadata, not billing data; raw rollout content is never copied into Code
+  Buddy telemetry.
+- Estimated Context Pressure remains clearly labelled as an estimate whenever
+  no matching native measurement is available.
 - Original prompts/tasks are preserved; Code Buddy never silently rewrites or submits them.
 
 ## Source map

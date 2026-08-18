@@ -784,7 +784,7 @@ function automaticPreflightContext(state) {
     `For this meaningful coding request, invoke ${required.join(' and ')} before substantive implementation.`,
     'If any MCP tool is deferred, use tool_search to load it before continuing.',
     'Pass the unchanged user request and a concise semantic modelAssessment to prompt review, task decomposition, and session fit. Measure context from available local evidence.',
-    'Read all four results. Before substantive work, begin exactly: Code Buddy: prompt quality <status> · task scope <status> · estimated context pressure <status> · session fit <status>. Use checked — limited evidence for empty or fallback context estimates.',
+    'Read all four results. Before substantive work, begin exactly: Code Buddy: prompt quality <status> · task scope <status> · context utilization <status> · session fit <status>. Use checked — limited evidence when native context data and a useful fallback are unavailable.',
     'Do not silently rewrite, submit, curate, or discard the developer request or context.'
   ].join(' ');
 }
@@ -1049,7 +1049,8 @@ function governanceContext(logPath, payload, eventName, eventId) {
   }
 
   const snapshot = [...records].reverse().find((record) => record.recordType === 'context.load_snapshot' && record.sessionId === sessionId);
-  const pressure = snapshot?.data?.estimatedContextPressure;
+  const actual = snapshot?.data?.actualContextUtilization;
+  const pressure = actual || snapshot?.data?.estimatedContextPressure;
   if (pressure && ['warning', 'critical'].includes(pressure.thresholdState)) {
     appendGovernanceIntervention(logPath, payload, 'context.warning', {
       thresholdState: pressure.thresholdState,
@@ -1057,7 +1058,11 @@ function governanceContext(logPath, payload, eventName, eventId) {
       unit: pressure.unit,
       utilization: pressure.utilization
     });
-    messages.push(`Code Buddy's prior local snapshot reports ${pressure.thresholdState} Estimated Context Pressure. Call measure_context before discussing it, then offer fresh-task curation, current-task curation, or continuing unchanged. Never claim this estimate is actual context utilization.`);
+    const label = actual ? 'Actual Context Utilization' : 'Estimated Context Pressure';
+    const qualification = actual
+      ? 'Use the native input-token/model-window ratio and do not substitute cumulative usage.'
+      : 'Never claim this fallback estimate is actual context utilization.';
+    messages.push(`Code Buddy's prior local snapshot reports ${pressure.thresholdState} ${label}. Call measure_context before discussing it, then offer fresh-task curation, current-task curation, or continuing unchanged. ${qualification}`);
   }
 
   if (!messages.length) {

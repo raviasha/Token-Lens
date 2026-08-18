@@ -35,6 +35,19 @@ function runHook(payload, environment) {
 
 const pythonCommand = findPython();
 
+function writeCodexRollout(sessionsRoot, workspace, sessionId) {
+  const directory = path.join(sessionsRoot, '2026', '08', '18');
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, `rollout-2026-08-18T00-00-00-${sessionId}.jsonl`), [
+    { timestamp: '2026-08-18T00:00:00.000Z', type: 'turn_context', payload: { cwd: workspace } },
+    { timestamp: '2026-08-18T00:00:02.500Z', type: 'event_msg', payload: { type: 'token_count', info: {
+      last_token_usage: { input_tokens: 30_000, cached_input_tokens: 20_000, output_tokens: 2_000, reasoning_output_tokens: 500, total_tokens: 32_500 },
+      total_token_usage: { input_tokens: 45_000, cached_input_tokens: 30_000, output_tokens: 3_000, reasoning_output_tokens: 700, total_tokens: 48_700 },
+      model_context_window: 40_000
+    } } }
+  ].map(JSON.stringify).join('\n') + '\n', 'utf8');
+}
+
 test('generates deterministic Code Buddy reports from a completed turn', { skip: !pythonCommand }, () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'token-lens-code-buddy-'));
   const workspace = path.join(directory, 'workspace');
@@ -43,6 +56,7 @@ test('generates deterministic Code Buddy reports from a completed turn', { skip:
   const feedbackPath = path.join(workspace, 'Code Buddy.md');
   const analyticsPath = path.join(workspace, 'Code Buddy Analytics.md');
   const interventionPath = path.join(workspace, '.code-buddy', 'interventions.jsonl');
+  const sessionsRoot = path.join(directory, 'codex-sessions');
   const transcriptPath = path.join(directory, 'transcript.jsonl');
   fs.mkdirSync(workspace, { recursive: true });
   fs.writeFileSync(path.join(workspace, 'app.js'), 'one\ntwo\n', 'utf8');
@@ -52,6 +66,7 @@ test('generates deterministic Code Buddy reports from a completed turn', { skip:
     id: 'assistant-1',
     timestamp: '2026-08-08T00:00:02.000Z'
   })}\n`, 'utf8');
+  writeCodexRollout(sessionsRoot, workspace, 'analytics-session');
 
   const environment = {
     TOKEN_LENS_LOG_FILE: logPath,
@@ -62,7 +77,8 @@ test('generates deterministic Code Buddy reports from a completed turn', { skip:
     TOKEN_LENS_TRACK_WORKTREE_CHANGES: 'true',
     TOKEN_LENS_SNAPSHOT_MAX_FILE_BYTES: '1000000',
     TOKEN_LENS_PYTHON_COMMAND: pythonCommand,
-    TOKEN_LENS_INTERVENTION_LOG_FILE: interventionPath
+    TOKEN_LENS_INTERVENTION_LOG_FILE: interventionPath,
+    CODE_BUDDY_CODEX_SESSIONS_DIR: sessionsRoot
   };
 
   fs.mkdirSync(path.dirname(interventionPath), { recursive: true });
@@ -118,18 +134,22 @@ test('generates deterministic Code Buddy reports from a completed turn', { skip:
   assert.equal(outcome.data.metrics.lineCountsComplete, true);
   const contextSnapshot = records.find((record) => record.recordType === 'context.load_snapshot');
   assert.ok(contextSnapshot);
-  assert.equal(contextSnapshot.data.estimatedContextPressure.unit, 'estimated_tokens');
-  assert.equal(contextSnapshot.data.estimatedContextPressure.measurementMethod, 'estimate');
-  assert.equal(contextSnapshot.data.estimatedContextPressure.terminology, 'Estimated Context Pressure');
-  assert.equal(contextSnapshot.data.estimatedContextPressure.estimatorVersion, 'code_buddy_context_estimator_v2');
+  assert.equal(contextSnapshot.data.actualContextUtilization.unit, 'tokens');
+  assert.equal(contextSnapshot.data.actualContextUtilization.measurementMethod, 'codex_token_count_event');
+  assert.equal(contextSnapshot.data.actualContextUtilization.terminology, 'Actual Context Utilization');
+  assert.equal(contextSnapshot.data.actualContextUtilization.value, 30_000);
+  assert.equal(contextSnapshot.data.actualContextUtilization.capacityTokens, 40_000);
+  assert.equal(contextSnapshot.data.actualContextUtilization.utilization, 0.75);
   assert.match(outcome.localTimestamp, /[+-]\d{2}:\d{2}$/);
   assert.match(fs.readFileSync(feedbackPath, 'utf8'), /# Code Buddy/);
   assert.match(fs.readFileSync(feedbackPath, 'utf8'), /Prompt quality:/);
-  assert.match(fs.readFileSync(feedbackPath, 'utf8'), /Estimated Context Pressure:/);
+  assert.match(fs.readFileSync(feedbackPath, 'utf8'), /Actual Context Utilization:/);
+  assert.match(fs.readFileSync(feedbackPath, 'utf8'), /75\.0%/);
   assert.match(fs.readFileSync(feedbackPath, 'utf8'), /Session fit:/);
   assert.match(fs.readFileSync(feedbackPath, 'utf8'), /limited evidence/i);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /## Changed Files/);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /## Latest Turn Context/);
+  assert.match(fs.readFileSync(analyticsPath, 'utf8'), /Actual Context Utilization — 75\.0%/);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /## Context By Turn/);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /## Code Buddy Interventions/);
   assert.match(fs.readFileSync(analyticsPath, 'utf8'), /\| Prompt reviews \| 1 \|/);

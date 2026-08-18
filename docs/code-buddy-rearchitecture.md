@@ -5,7 +5,7 @@
 | Area | Decision | Result |
 |---|---|---|
 | Schema-v2 hook capture and redaction | Retain | Existing local records, transcript deduplication, and failure-tolerant hook behavior remain compatible. |
-| Worktree snapshots and Markdown reports | Retain and extend | Existing metrics remain; reports now include versioned Estimated Context Pressure snapshots and intervention counts. |
+| Worktree snapshots and Markdown reports | Retain and extend | Existing metrics remain; reports prefer native Codex context utilization and retain versioned Estimated Context Pressure snapshots as fallback. |
 | Prompt-quality and task-size heuristics | Retain only as retrospective labels | They no longer represent semantic live evaluation. Structured AI tools own prompt review and decomposition. |
 | Thresholds and triggers | Refactor | Policy lives in typed configuration and is passed to the hook through environment settings. |
 | Agent orchestration | Add | A managed workspace instruction requests evaluation, and a deterministic preflight gate enforces completion before implementation while skipping tiny control replies. |
@@ -28,11 +28,18 @@ For every meaningful prompt, `UserPromptSubmit` creates per-prompt governance st
 
 ## Capability-aware limitations
 
-The current GitHub Copilot/VS Code adapter has hook-based event access, language-model tool support, and Quick Pick support. It does not claim native complete active-context measurement, visual screen inspection from the extension, or automatic fresh-chat seeding.
+The GitHub Copilot/VS Code adapter has hook-based event access, language-model
+tool support, and Quick Pick support. It does not claim native complete
+active-context measurement, visual screen inspection from the extension, or
+automatic fresh-chat seeding. The Codex adapter additionally reads local
+`token_count` rollout events.
 
 Consequently:
 
-- Complete native measurements are accepted only from a provider that explicitly supplies them.
+- Codex native measurements use `last_token_usage.input_tokens` divided by
+  `model_context_window`; cumulative usage is not a context-pressure value.
+- Other complete native measurements are accepted only from a provider that
+  explicitly supplies them.
 - An invoking agent may supply a visual measurement only after actually reading a visible indicator and when vision verification is enabled.
 - Otherwise the result is `estimate` and is labeled **Estimated Context Pressure**.
 - Fresh-task curation produces an approved clipboard payload; the developer opens and submits the new chat.
@@ -56,7 +63,7 @@ Consequently:
 | Good prompts/tasks avoid interruption | Presenters open only when structured results recommend intervention. |
 | Weak prompts and large tasks receive selectable alternatives | Tool results contain dynamic prompt options/decomposition strategies and Quick Pick selections. |
 | Original prompt/task is always available | Normalizers add deterministic `original` options; all failure paths select or retain them. |
-| Context values are labeled honestly | Schema-v2 `context.load_snapshot` records use `estimated_tokens`, `measurementMethod: estimate`, and `Estimated Context Pressure`. |
+| Context values are labeled honestly | Schema-v2 `context.load_snapshot` records use `tokens` and `Actual Context Utilization` for matching native Codex events; fallbacks keep `estimated_tokens`, `measurementMethod: estimate`, and `Estimated Context Pressure`. Missing native capacity never produces an invented percentage. |
 | Measurement uses the best provider | `ContextMeasurementService` orders API, vision, and estimate providers and preserves method/confidence. |
 | High context can produce a curated handoff | Governance verifies the measurement, offers three user choices, and starts the previewable curation workflow. |
 | New sessions can trigger curation | A different known session ID on the first meaningful prompt emits `session.boundary_detected`, offers carry-forward or a clean start, and copies an accepted handoff for the already-open chat. |

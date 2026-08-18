@@ -111,16 +111,24 @@ export interface SessionFitResult {
 }
 
 export type ContextMeasurementMethod = 'api' | 'vision' | 'estimate';
-export type ContextThresholdState = 'normal' | 'warning' | 'critical';
+export type ContextThresholdState = 'normal' | 'warning' | 'critical' | 'unavailable';
 
 export interface ContextEstimate {
   value: number;
   unit: 'tokens' | 'estimated_tokens';
   utilization?: number;
+  capacityTokens?: number;
   method: ContextMeasurementMethod;
   confidence: 'high' | 'medium' | 'low';
   thresholdState: ContextThresholdState;
   estimatorVersion?: string;
+  providerId?: string;
+  measurementTimestamp?: string;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  totalTokens?: number;
   terminology: 'Actual Context Utilization' | 'Estimated Context Pressure';
 }
 
@@ -129,6 +137,14 @@ export interface ContextMeasurementCandidate {
   unit: 'tokens';
   confidence: 'high' | 'medium' | 'low';
   providerId: string;
+  capacityTokens?: number;
+  utilization?: number;
+  measurementTimestamp?: string;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  totalTokens?: number;
   evidence?: string;
 }
 

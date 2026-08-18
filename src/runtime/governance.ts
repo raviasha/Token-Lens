@@ -241,7 +241,7 @@ export class DeterministicGovernance {
       }
 
       const snapshot = observeSession(records, this.dependencies.policy);
-      if (!snapshot || snapshot.estimate.thresholdState === 'normal' || boundaryOffered) {
+      if (!snapshot || !['warning', 'critical'].includes(snapshot.estimate.thresholdState) || boundaryOffered) {
         return;
       }
       const contextKey = `${snapshot.sessionId}:${snapshot.timestamp}:${snapshot.estimate.value}:${snapshot.estimate.thresholdState}`;
@@ -250,7 +250,7 @@ export class DeterministicGovernance {
       }
       this.processedContextKeys.add(contextKey);
       const measurement = await this.dependencies.workflow.measureContext(false);
-      if (measurement.measurement.thresholdState === 'normal') {
+      if (!['warning', 'critical'].includes(measurement.measurement.thresholdState)) {
         return;
       }
       await this.dependencies.appendEvent({
@@ -261,8 +261,11 @@ export class DeterministicGovernance {
           observableSignals: snapshot.signals
         }
       });
+      const contextDetail = measurement.measurement.utilization !== undefined && measurement.measurement.capacityTokens
+        ? `${(measurement.measurement.utilization * 100).toFixed(1)}% (${measurement.measurement.value.toLocaleString()} / ${measurement.measurement.capacityTokens.toLocaleString()} input tokens)`
+        : `~${measurement.measurement.value.toLocaleString()} ${measurement.measurement.unit.replace('_', ' ')}`;
       const action = await vscode.window.showWarningMessage(
-        `${measurement.measurement.terminology} is ${measurement.measurement.thresholdState} (~${measurement.measurement.value.toLocaleString()} ${measurement.measurement.unit.replace('_', ' ')}). Continuing may increase noise or token cost.`,
+        `${measurement.measurement.terminology} is ${measurement.measurement.thresholdState} (${contextDetail}). Continuing may increase noise or token cost.`,
         'Start fresh with curated context',
         'Curate current task',
         'Continue unchanged'

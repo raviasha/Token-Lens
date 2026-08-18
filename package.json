@@ -142,8 +142,8 @@
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "codeBuddyContextMeasurement",
         "icon": "$(dashboard)",
-        "userDescription": "Verify context pressure using API, vision, or an explicitly labeled estimate.",
-        "modelDescription": "Measure context using the strict hierarchy native/public API, then permitted visual inspection, then Code Buddy estimate. Only supply nativeMeasurement when a provider API reports complete active context. Only supply visionMeasurement after actually reading a visible context indicator. The result preserves measured versus estimated terminology.",
+        "userDescription": "Show actual input-token context utilization when Codex exposes it, with an explicitly labeled estimate as fallback.",
+        "modelDescription": "Use a native Codex token-count snapshot when Code Buddy has one, reporting input tokens as a percentage of the model context window when capacity is available. Otherwise use permitted visual inspection or an explicitly labeled estimate. Never derive a percentage from cumulative total usage.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -171,6 +171,14 @@
                 "unit": { "enum": ["tokens"] },
                 "confidence": { "enum": ["high", "medium", "low"] },
                 "providerId": { "type": "string" },
+                "capacityTokens": { "type": "number", "minimum": 1 },
+                "utilization": { "type": "number", "minimum": 0 },
+                "measurementTimestamp": { "type": "string" },
+                "cachedInputTokens": { "type": "number", "minimum": 0 },
+                "cacheWriteInputTokens": { "type": "number", "minimum": 0 },
+                "outputTokens": { "type": "number", "minimum": 0 },
+                "reasoningTokens": { "type": "number", "minimum": 0 },
+                "totalTokens": { "type": "number", "minimum": 0 },
                 "evidence": { "type": "string" }
               },
               "required": ["value", "unit", "confidence", "providerId"]
@@ -384,7 +392,7 @@
           "default": 0.7,
           "minimum": 0,
           "maximum": 1,
-          "description": "Estimated Context Pressure ratio that triggers a warning."
+          "description": "Context utilization ratio that triggers a warning. Applies to actual utilization when Codex exposes a model window and to the labeled fallback estimate otherwise."
         },
         "tokenLens.context.criticalThreshold": {
           "type": "number",

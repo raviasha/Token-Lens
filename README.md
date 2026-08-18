@@ -1,13 +1,13 @@
 # Code Buddy
 
-Code Buddy is a VS Code extension that adds transparent, developer-controlled governance and local analytics to supported GitHub Copilot coding-agent sessions.
+Code Buddy is a VS Code extension and Codex plugin that add transparent, developer-controlled governance and local analytics to coding-agent sessions.
 
 It has four deliberately separate responsibilities:
 
 1. **Hook capture:** deterministically records the Copilot events that VS Code supplies.
-2. **Preflight enforcement:** allows investigation but prevents implementation until prompt quality, task scope, Estimated Context Pressure, and session-fit checks complete, fail safely, or the developer approves a controlled fallback.
+2. **Preflight enforcement:** allows investigation but prevents implementation until prompt quality, task scope, context-utilization, and session-fit checks complete, fail safely, or the developer approves a controlled fallback.
 3. **Structured AI tools:** uses the selected VS Code language-model provider for prompt review, task decomposition, context measurement, session fit, and context curation.
-4. **Local governance:** detects high Estimated Context Pressure, a likely new task within a chat, or the first meaningful prompt in a new chat and offers an appropriate handoff.
+4. **Local governance:** detects high actual context utilization when Codex exposes it (or high explicitly labeled Estimated Context Pressure otherwise), a likely new task within a chat, or the first meaningful prompt in a new chat and offers an appropriate handoff.
 
 Code Buddy never silently replaces a prompt, automatically discards a conversation, or submits a new Copilot chat for the developer.
 
@@ -46,8 +46,8 @@ measurement:
 ```
 
 Code Buddy starts every meaningful coding task with one compact health line:
-`prompt quality`, `task scope`, `estimated context pressure`, and `session
-fit`. Empty local context evidence is labeled **checked — limited evidence**;
+`prompt quality`, `task scope`, `context utilization`, and `session fit`.
+Empty local context evidence is labeled **checked — limited evidence**;
 it is never presented as actual context use. Raise `enhanceBelow` for more
 prompt-enhancement suggestions; lower the other thresholds for stricter
 decomposition, pressure, or fresh-task recommendations. A fresh-task
@@ -63,6 +63,13 @@ worded as an observed association rather than a causal or personalized claim.
 
 ## What's new in v0.9.0
 
+- Codex context measurement now reads the latest local `token_count` event,
+  displays `last_token_usage.input_tokens` as a percentage of
+  `model_context_window` (the reported model context window), and retains the
+  existing estimate only as fallback.
+- Actual input tokens remain visible when Codex omits model capacity, but Code
+  Buddy does not invent a percentage. Reading these local events consumes no
+  model tokens and persists no raw rollout content.
 - Every prompt now receives an explicit model-presented personalized-feedback
   status, including a clear **Not enough data yet** message during cold start.
 - Schema-1.1 local telemetry distinguishes human-requested corrective retries
@@ -319,11 +326,19 @@ Command: **Code Buddy: Measure Context**
 
 Measurement follows this strict order:
 
-1. Complete active-context usage from a capable native/public provider API.
+1. The latest native Codex `token_count` event associated with the current
+   session or workspace.
 2. A visually verified context indicator supplied only after an invoking agent actually reads one and vision verification is enabled.
 3. Code Buddy's deterministic estimate from observed events.
 
-Provider/API values are labeled **Actual Context Utilization** only when the provider claims complete active-context measurement. Fallback values are labeled **Estimated Context Pressure**, use `estimated_tokens`, and do not represent billing or exact context-window use. Results record `context.measured`; failures fall back to the best honest estimate available.
+For Codex, Code Buddy uses `last_token_usage.input_tokens` as the current
+context numerator and `model_context_window` as the denominator. It never uses
+cumulative `total_token_usage` for this percentage. Native values are labeled
+**Actual Context Utilization**. If the window is absent, the actual input-token
+count is shown and the percentage is unavailable. Fallback values are labeled
+**Estimated Context Pressure**, use `estimated_tokens`, and do not represent
+billing or exact context-window use. Results record `context.measured`;
+failures fall back to the best honest estimate available.
 
 ### Context Curator
 
@@ -415,7 +430,10 @@ Response:
 - Records `context.warning_choice`.
 - Starts curation only when the developer chooses it.
 
-The defaults are a 40,000 estimated-token denominator, warning at 70%, and critical at 85%. These are policy values for Estimated Context Pressure, not claims about the selected model's actual context window.
+Warning and critical defaults are 70% and 85%. For a native Codex measurement,
+they apply to the actual input-token/model-window ratio. The 40,000-token
+setting is used only by the fallback estimate and is not a claim about the
+selected model's actual context window.
 
 ## Workspace files and local state
 
@@ -461,7 +479,9 @@ Source event IDs are persisted so repeated transcript reads do not duplicate nor
 ### Analytics records
 
 - `turn.outcome` — observed added, modified, and deleted files plus exact line counts when available.
-- `context.load_snapshot` — deterministic Estimated Context Pressure and its observable signals.
+- `context.load_snapshot` — latest native Codex input-token utilization and
+  token components when available; otherwise deterministic Estimated Context
+  Pressure and its observable signals.
 
 ## Intervention-log event reference
 
@@ -531,8 +551,8 @@ Settings remain under the `tokenLens` namespace for upgrade compatibility.
 | `tokenLens.humanRetry.minimumEffectSize` | `0.15` | Minimum absolute count-model coefficient for advice. |
 | `tokenLens.humanRetry.overdispersionThreshold` | `1.50` | Pearson dispersion above which analysis falls back from Poisson to negative binomial. |
 | `tokenLens.context.estimatedContextCapacityTokens` | `40000` | Denominator used only for Estimated Context Pressure; minimum 1,000. |
-| `tokenLens.context.warningThreshold` | `0.70` | Estimated-pressure ratio that triggers warning behavior. |
-| `tokenLens.context.criticalThreshold` | `0.85` | Estimated-pressure ratio that triggers critical behavior; never lower than warning. |
+| `tokenLens.context.warningThreshold` | `0.70` | Actual context-utilization ratio, or fallback estimated-pressure ratio, that triggers warning behavior. |
+| `tokenLens.context.criticalThreshold` | `0.85` | Actual context-utilization ratio, or fallback estimated-pressure ratio, that triggers critical behavior; never lower than warning. |
 | `tokenLens.context.allowVisionVerification` | `true` | Accepts a visually verified indicator only when an invoking visual agent actually supplies one. |
 | `tokenLens.context.offerCurationOnNewSession` | `true` | Offers prior-context carry-forward on the first meaningful prompt with a different known session ID. |
 | `tokenLens.context.offerCurationOnNewTask` | `true` | Offers a task-specific fresh-chat handoff for a deterministic same-session task boundary. |
@@ -546,10 +566,14 @@ Reload VS Code after changing runtime policies. Run **Code Buddy: Install Copilo
 - Submitted and transformed prompt text that the supported surface exposes.
 - Tool requests, results, failures, errors, subagent responses, and transcript events that are supplied.
 - Observed textual characters and approximate tokens using four characters per token.
-- Provider token-usage fields when present, without treating one event's usage as complete session utilization.
+- Native Codex input, cached-input, output, reasoning, total, cumulative usage,
+  and model-window fields when present. Current context percentage uses only
+  last-input usage divided by the model window.
 - Files referenced in captured records.
 - Net files and lines added, modified, or deleted between the initial prompt baseline and main-agent stop.
-- Per-turn Estimated Context Pressure, model-interaction estimates, and repeated prior-context estimates.
+- Per-turn actual Codex context utilization where available, plus fallback
+  Estimated Context Pressure, model-interaction estimates, and repeated
+  prior-context estimates.
 - Semantic recommendations, developer choices, safe fallbacks, and accepted curation metadata.
 
 ## Privacy, attribution, and limitations
@@ -562,7 +586,9 @@ Reload VS Code after changing runtime policies. Run **Code Buddy: Install Copilo
 - A file created and deleted before `Stop` has no lasting worktree delta and cannot be reported as changed.
 - Exact line counts can be unavailable for binary, oversized, unreadable, or truncated files.
 - Code Buddy cannot access hidden system prompts, model-internal reasoning, undocumented provider state, or data Copilot never supplies.
-- Estimated Context Pressure is not exact active-context utilization, the model's advertised context window, or a billing statement.
+- Native Codex token-count events are local runtime measurements, not billing
+  statements. The fallback Estimated Context Pressure is not exact
+  active-context utilization or the model's advertised context window.
 - Opening an empty native Copilot chat is not a reliable trigger. New-session curation begins with the first meaningful submitted prompt.
 - Code Buddy cannot create, seed, paste into, or submit a native Copilot chat automatically. It produces an approved clipboard handoff.
 - Cloud-agent files can be ephemeral; local reports are useful only when hooks and the extension can access the same workspace/log paths.

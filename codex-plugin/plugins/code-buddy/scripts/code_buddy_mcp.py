@@ -97,6 +97,24 @@ def policy_for(arguments: dict[str, Any]) -> dict[str, Any]:
     return load_project_policy(workspace_path(arguments))["policy"]
 
 
+def read_native_codex_context(arguments: dict[str, Any]) -> dict[str, Any] | None:
+    """Read Codex's latest local token_count event through the shared JS reader."""
+    workspace = workspace_path(arguments)
+    telemetry = Path(__file__).with_name("telemetry.cjs")
+    command = ["node", str(telemetry), "native-context", str(workspace)]
+    session_id = as_string(arguments.get("sessionId"))
+    if session_id:
+        command.append(session_id)
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=3, check=False)
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return None
+        result = json.loads(completed.stdout)
+        return result if result.get("status") == "actual" else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return None
+
+
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -385,16 +403,55 @@ def estimate_context(arguments: dict[str, Any]) -> dict[str, Any]:
     warning_at = thresholds["warningAt"]
     critical_at = thresholds["criticalAt"]
     native = arguments.get("nativeMeasurement")
+    if not (isinstance(native, dict) and isinstance(native.get("value"), (int, float)) and native.get("value", 0) >= 0):
+        observed = read_native_codex_context(arguments)
+        if observed:
+            native = {
+                "value": observed.get("input_tokens"),
+                "capacity": observed.get("model_context_window_tokens"),
+                "utilization": observed.get("context_utilization"),
+                "confidence": observed.get("measurement_confidence", "high"),
+                "providerId": "codex-cli-token-count",
+                "measurementMethod": observed.get("measurement_method", "codex_token_count_event"),
+                "measurementTimestamp": observed.get("measurement_timestamp"),
+                "cachedInputTokens": observed.get("cached_input_tokens"),
+                "cacheWriteInputTokens": observed.get("cache_write_input_tokens"),
+                "outputTokens": observed.get("output_tokens"),
+                "reasoningTokens": observed.get("reasoning_tokens"),
+                "totalTokens": observed.get("total_tokens"),
+                "cumulativeUsage": observed.get("cumulative_usage"),
+            }
     if isinstance(native, dict) and isinstance(native.get("value"), (int, float)) and native.get("value", 0) >= 0:
         value = int(native["value"])
-        capacity = max(1, int(native.get("capacity") or capacity_tokens))
-        utilization = value / capacity
+        capacity_value = native.get("capacity")
+        capacity = int(capacity_value) if isinstance(capacity_value, (int, float)) and capacity_value > 0 else None
+        utilization_value = native.get("utilization")
+        utilization = float(utilization_value) if isinstance(utilization_value, (int, float)) else (value / capacity if capacity else None)
+        threshold = "unavailable" if utilization is None else "critical" if utilization >= critical_at else "warning" if utilization >= warning_at else "normal"
+        measurement = {
+            "method": native.get("measurementMethod", "api"),
+            "value": value,
+            "unit": "tokens",
+            "utilization": round(utilization, 4) if utilization is not None else None,
+            "capacity": capacity,
+            "confidence": native.get("confidence", "high"),
+            "providerId": native.get("providerId", "user-supplied"),
+            "terminology": "Actual Context Utilization",
+            "thresholdState": threshold,
+            "measurementTimestamp": native.get("measurementTimestamp"),
+            "cachedInputTokens": native.get("cachedInputTokens"),
+            "cacheWriteInputTokens": native.get("cacheWriteInputTokens"),
+            "outputTokens": native.get("outputTokens"),
+            "reasoningTokens": native.get("reasoningTokens"),
+            "totalTokens": native.get("totalTokens"),
+            "cumulativeUsage": native.get("cumulativeUsage"),
+        }
         result = {
             "contractVersion": CONTRACT_VERSION,
             "kind": "context_measurement",
             "status": "ok",
-            "measurement": {"method": "api", "value": value, "unit": "tokens", "utilization": round(utilization, 4), "confidence": native.get("confidence", "high"), "providerId": native.get("providerId", "user-supplied"), "terminology": "Actual Context Utilization"},
-            "recommendation": "curate_or_start_fresh" if utilization >= warning_at else "continue",
+            "measurement": measurement,
+            "recommendation": "curate_or_start_fresh" if threshold in {"warning", "critical"} else "continue",
         }
         append_intervention(arguments, "context.measured", result)
         return result
@@ -422,7 +479,7 @@ def estimate_context(arguments: dict[str, Any]) -> dict[str, Any]:
         "status": "ok" if records else "fallback",
         "measurement": {"method": "estimate", "value": value, "unit": "estimated_tokens", "utilization": round(utilization, 4), "confidence": confidence, "providerId": "code-buddy-local-log", "terminology": "Estimated Context Pressure", "thresholdState": threshold, "estimatorVersion": "code_buddy_context_estimator_v2"},
         "recommendation": "curate_or_start_fresh" if threshold in {"warning", "critical"} else "continue",
-        "limitation": "Codex does not expose complete active-context usage to this plugin. This is an estimate from observable local events, not a billing value.",
+        "limitation": "No matching native Codex token_count event was available. This fallback is an estimate from observable local events, not a billing value.",
     }
     append_intervention(arguments, "context.measured", result)
     return result
@@ -632,7 +689,7 @@ SESSION = {"type": "string", "description": "Optional Codex session/thread id wh
 TOOLS = [
     tool("review_prompt", "Evaluate a meaningful coding prompt before implementation. Pass an optional modelAssessment when you have prepared a semantic assessment; Code Buddy validates it, preserves the original prompt, and falls back safely when absent. If intervention is recommended and no option is selected, list every option in the normal user-visible response instead of relying on tool output or Thinking.", ["workspace", "prompt"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "prompt": {"type": "string"}, "relevantContext": {"type": "array", "items": {"type": "string"}}, "modelAssessment": {"type": "object", "description": "Optional Codex semantic review with score, dimensions, reasons, issues, interventionRecommended, suggestions, and options."}}),
     tool("decompose_task", "Assess task complexity and provide an optional, dependency-ordered strategy while preserving the original task option. Pass modelAssessment when a Codex semantic assessment has been prepared. If decomposition is recommended, list the original task and every strategy in the normal user-visible response instead of relying on tool output or Thinking.", ["workspace", "task"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "task": {"type": "string"}, "relevantContext": {"type": "array", "items": {"type": "string"}}, "modelAssessment": {"type": "object", "description": "Optional Codex semantic assessment with complexityScore, reasons, decompositionRecommended, and strategies."}}),
-    tool("measure_context", "Measure supplied native context usage or honestly estimate pressure from Code Buddy's local Codex event log.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION, "nativeMeasurement": {"type": "object", "properties": {"value": {"type": "number", "minimum": 0}, "capacity": {"type": "number", "minimum": 1}, "confidence": {"type": "string"}, "providerId": {"type": "string"}}, "required": ["value"]}}),
+    tool("measure_context", "Read the latest native Codex token_count event for the task and report input-token utilization as a percentage of the model context window when available; fall back to an explicitly labeled estimate.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION, "nativeMeasurement": {"type": "object", "properties": {"value": {"type": "number", "minimum": 0}, "capacity": {"type": "number", "minimum": 1}, "utilization": {"type": "number", "minimum": 0}, "confidence": {"type": "string"}, "providerId": {"type": "string"}}, "required": ["value"]}}),
     tool("assess_session_fit", "Assess whether the current meaningful coding request belongs in this task or merits a developer-controlled fresh-task handoff. It never creates a task automatically. If a fresh-task choice is recommended, show both options in the normal user-visible response instead of relying on tool output or Thinking.", ["workspace", "prompt"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "prompt": {"type": "string"}, "previousPrompt": {"type": "string"}, "relevantContext": {"type": "array", "items": {"type": "string"}}, "modelAssessment": {"type": "object", "description": "Optional Codex semantic assessment with newTaskLikelihood, confidence, and reason."}}),
     tool("curate_context", "Create a previewable minimum-sufficient handoff only after the developer chooses curation. Set developerConfirmed to true only after the developer chose fresh-task curation; that creates a marked handoff that must be pasted into the fresh task. Pass modelBundle when a Codex semantic curation has been prepared.", ["workspace", "targetTask", "mode"], {"workspace": WORKSPACE, "sessionId": SESSION, "targetTask": {"type": "string"}, "mode": {"type": "string", "enum": ["fresh_task", "continue_current"]}, "developerConfirmed": {"type": "boolean", "description": "True only after the developer explicitly chose fresh-task curation."}, "conversationHistory": {"type": "array", "items": {"type": "string"}}, "knownDecisions": {"type": "array", "items": {"type": "string"}}, "relevantFiles": {"type": "array", "items": {"type": "string"}}, "constraints": {"type": "array", "items": {"type": "string"}}, "implementationState": {"type": "array", "items": {"type": "string"}}, "completedWork": {"type": "array", "items": {"type": "string"}}, "remainingWork": {"type": "array", "items": {"type": "string"}}, "knownIssues": {"type": "array", "items": {"type": "string"}}, "validation": {"type": "array", "items": {"type": "string"}}, "openQuestions": {"type": "array", "items": {"type": "string"}}, "pinnedItems": {"type": "array", "items": {"type": "string"}}, "excludedHistory": {"type": "array", "items": {"type": "string"}}, "modelBundle": {"type": "object", "description": "Optional Codex semantic curation with taskObjective, items, suggestedStartingInstruction, and excludedHistory."}}),
     tool("session_status", "Return local Code Buddy log and report paths for the current workspace.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION}, True),

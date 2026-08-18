@@ -115,6 +115,174 @@ function isoTimestamp(value) {
   return Number.isNaN(candidate.getTime()) ? new Date().toISOString() : candidate.toISOString();
 }
 
+function finiteNonNegative(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function codexSessionsRoot(options = {}) {
+  if (options.sessionsRoot) return path.resolve(options.sessionsRoot);
+  if (process.env.CODE_BUDDY_CODEX_SESSIONS_DIR) {
+    return path.resolve(process.env.CODE_BUDDY_CODEX_SESSIONS_DIR);
+  }
+  const configuredRoot = process.env.CODEX_HOME;
+  const codexRoot = configuredRoot && path.isAbsolute(configuredRoot)
+    ? configuredRoot
+    : path.join(os.homedir(), '.codex');
+  return path.join(codexRoot, 'sessions');
+}
+
+function collectCodexRollouts(root, maximumFiles = 120) {
+  const files = [];
+  const pending = [{ directory: root, depth: 0 }];
+  while (pending.length) {
+    const current = pending.pop();
+    if (!current || current.depth > 4) continue;
+    let entries;
+    try {
+      entries = fs.readdirSync(current.directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(current.directory, entry.name);
+      if (entry.isDirectory()) {
+        pending.push({ directory: entryPath, depth: current.depth + 1 });
+      } else if (entry.isFile() && /^rollout-.*\.jsonl$/i.test(entry.name)) {
+        try {
+          files.push({ path: entryPath, modified: fs.statSync(entryPath).mtimeMs });
+        } catch {
+          // A concurrently rotated rollout is simply unavailable for this observation.
+        }
+      }
+    }
+  }
+  return files.sort((left, right) => right.modified - left.modified).slice(0, maximumFiles);
+}
+
+function readFileSection(filePath, start, length) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(Math.max(0, length));
+    const bytes = fs.readSync(descriptor, buffer, 0, buffer.length, Math.max(0, start));
+    return buffer.subarray(0, bytes).toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch { /* best effort */ }
+    }
+  }
+}
+
+function readRolloutWindows(filePath, bytesPerWindow = 768 * 1024) {
+  let size;
+  try { size = fs.statSync(filePath).size; } catch { return ''; }
+  const first = readFileSection(filePath, 0, Math.min(size, bytesPerWindow));
+  if (size <= bytesPerWindow) return first;
+  const last = readFileSection(filePath, Math.max(0, size - bytesPerWindow), Math.min(size, bytesPerWindow));
+  return `${first}\n${last}`;
+}
+
+function rolloutMatchesWorkspace(filePath, workspace) {
+  if (!workspace) return false;
+  const expected = path.resolve(workspace);
+  const windows = readRolloutWindows(filePath);
+  for (const line of windows.split(/\r?\n/)) {
+    if (!line.includes('"turn_context"') && !line.includes('"session_meta"')) continue;
+    let record;
+    try { record = JSON.parse(line); } catch { continue; }
+    const payload = record?.payload;
+    if (!payload || typeof payload !== 'object') continue;
+    const candidates = [payload.cwd, ...(Array.isArray(payload.workspace_roots) ? payload.workspace_roots : [])]
+      .filter((value) => typeof value === 'string');
+    if (candidates.some((value) => path.resolve(value) === expected)) return true;
+  }
+  return false;
+}
+
+function rolloutSessionId(filePath) {
+  const match = path.basename(filePath).match(/([0-9a-f]{8}-[0-9a-f-]{27,})\.jsonl$/i);
+  return match?.[1] || null;
+}
+
+function latestCodexTokenCount(filePath, maximumBytes = 16 * 1024 * 1024) {
+  let size;
+  try { size = fs.statSync(filePath).size; } catch { return null; }
+  const length = Math.min(size, maximumBytes);
+  const contents = readFileSection(filePath, Math.max(0, size - length), length);
+  const lines = contents.split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line.includes('"token_count"')) continue;
+    let record;
+    try { record = JSON.parse(line); } catch { continue; }
+    if (record?.type !== 'event_msg' || record?.payload?.type !== 'token_count') continue;
+    const info = record.payload.info;
+    const last = info?.last_token_usage;
+    if (!last || typeof last !== 'object') continue;
+    const inputTokens = finiteNonNegative(last.input_tokens);
+    if (inputTokens === null) continue;
+    const modelContextWindowTokens = finiteNonNegative(info.model_context_window);
+    const total = info.total_token_usage && typeof info.total_token_usage === 'object'
+      ? info.total_token_usage
+      : {};
+    return {
+      measurement_method: 'codex_token_count_event',
+      measurement_confidence: 'high',
+      terminology: 'Actual Context Utilization',
+      measurement_timestamp: asString(record.timestamp) ? isoTimestamp(record.timestamp) : null,
+      input_tokens: inputTokens,
+      cached_input_tokens: finiteNonNegative(last.cached_input_tokens),
+      cache_write_input_tokens: finiteNonNegative(last.cache_write_input_tokens),
+      output_tokens: finiteNonNegative(last.output_tokens),
+      reasoning_tokens: finiteNonNegative(last.reasoning_output_tokens),
+      total_tokens: finiteNonNegative(last.total_tokens),
+      model_context_window_tokens: modelContextWindowTokens && modelContextWindowTokens > 0
+        ? modelContextWindowTokens
+        : null,
+      context_utilization: modelContextWindowTokens && modelContextWindowTokens > 0
+        ? inputTokens / modelContextWindowTokens
+        : null,
+      cumulative_usage: {
+        input_tokens: finiteNonNegative(total.input_tokens),
+        cached_input_tokens: finiteNonNegative(total.cached_input_tokens),
+        cache_write_input_tokens: finiteNonNegative(total.cache_write_input_tokens),
+        output_tokens: finiteNonNegative(total.output_tokens),
+        reasoning_tokens: finiteNonNegative(total.reasoning_output_tokens),
+        total_tokens: finiteNonNegative(total.total_tokens)
+      }
+    };
+  }
+  return null;
+}
+
+function readCodexNativeContext(options = {}) {
+  const sessionId = asString(options.sessionId);
+  const workspace = asString(options.workspace);
+  const rollouts = collectCodexRollouts(codexSessionsRoot(options));
+  const candidates = sessionId && sessionId !== 'unknown'
+    ? rollouts.filter((item) => path.basename(item.path).includes(sessionId))
+    : rollouts.filter((item) => rolloutMatchesWorkspace(item.path, workspace));
+  for (const candidate of candidates) {
+    const measurement = latestCodexTokenCount(candidate.path);
+    if (!measurement) continue;
+    return {
+      status: 'actual',
+      session_id: sessionId && sessionId !== 'unknown' ? sessionId : rolloutSessionId(candidate.path),
+      ...measurement
+    };
+  }
+  return {
+    status: 'unavailable',
+    session_id: sessionId && sessionId !== 'unknown' ? sessionId : null,
+    measurement_method: 'unavailable',
+    measurement_confidence: 'low',
+    terminology: 'Actual Context Utilization',
+    limitation: 'No matching Codex token_count event was available for this workspace and session.'
+  };
+}
+
 function workspaceFrom(payload) {
   const candidate = asString(getValue(payload, 'cwd', 'workspace', 'workspacePath'));
   return path.resolve(candidate || process.cwd());
@@ -763,7 +931,19 @@ function handlePreflightTool(state, context, emit, toolName, toolResult) {
         : null,
       measurement_method: measurement.method || null,
       measurement_confidence: measurement.confidence || null,
-      measurement_terminology: measurement.terminology || null
+      measurement_terminology: measurement.terminology || null,
+      measurement_timestamp: measurement.measurementTimestamp || null,
+      measurement_provider_id: measurement.providerId || null,
+      model_context_window_tokens: typeof measurement.capacity === 'number' ? measurement.capacity : null,
+      context_utilization: typeof measurement.utilization === 'number' ? measurement.utilization : null,
+      cached_input_tokens: typeof measurement.cachedInputTokens === 'number' ? measurement.cachedInputTokens : null,
+      cache_write_input_tokens: typeof measurement.cacheWriteInputTokens === 'number' ? measurement.cacheWriteInputTokens : null,
+      output_tokens: typeof measurement.outputTokens === 'number' ? measurement.outputTokens : null,
+      reasoning_tokens: typeof measurement.reasoningTokens === 'number' ? measurement.reasoningTokens : null,
+      total_tokens: typeof measurement.totalTokens === 'number' ? measurement.totalTokens : null,
+      cumulative_usage: measurement.cumulativeUsage && typeof measurement.cumulativeUsage === 'object'
+        ? measurement.cumulativeUsage
+        : null
     }));
     if (intervene) showRecommendation(state, context, emit, 'reduce_context', {
       source_check: 'context_pressure', source_score: score, reason: toolResult.measurement?.thresholdState || 'context_pressure_above_threshold'
@@ -1516,6 +1696,9 @@ function aggregateTask(events, taskId) {
   const contextSnapshots = taskEvents.filter((event) => event.event_type === 'context_snapshot');
   const maxEstimatedContext = contextSnapshots.reduce((maximum, event) => Math.max(maximum, event.payload.estimated_context_tokens || 0), 0) || null;
   const maxActualContext = contextSnapshots.reduce((maximum, event) => Math.max(maximum, event.payload.actual_context_tokens || 0), 0) || null;
+  const measuredUtilizations = contextSnapshots.map((event) => event.payload.context_utilization)
+    .filter((value) => typeof value === 'number' && Number.isFinite(value));
+  const maxContextUtilization = measuredUtilizations.length ? Math.max(...measuredUtilizations) : null;
   const usage = taskEvents.filter((event) => event.event_type === 'ai_usage');
   const fileHashes = new Set(taskEvents.filter((event) => event.event_type === 'file_activity').map((event) => event.payload.file_hash).filter(Boolean));
   const models = [...new Set(taskEvents
@@ -1570,7 +1753,9 @@ function aggregateTask(events, taskId) {
   const decompositionDecisions = recommendationDecisions.filter((event) =>
     (event.payload.recommendation_type || recommendationById.get(event.payload.recommendation_id)) === 'decompose_task');
   const initialContextSnapshot = taskEvents.find((event) => event.event_type === 'context_snapshot'
-    && ['preflight_measurement', 'task_start', 'before_agent_execution'].includes(event.payload.checkpoint));
+    && event.payload.checkpoint === 'preflight_measurement')
+    || taskEvents.find((event) => event.event_type === 'context_snapshot'
+      && ['task_start', 'before_agent_execution'].includes(event.payload.checkpoint));
   const sessionMisfit = initialPreflight.session_fit?.score ?? null;
   const completed = finalState === 'completed';
   const firstTimestamp = new Date(taskEvents[0].timestamp).getTime();
@@ -1609,6 +1794,8 @@ function aggregateTask(events, taskId) {
     initial_actual_context_tokens: initialContextSnapshot?.payload.actual_context_tokens ?? null,
     initial_context_tokens: initialContextSnapshot?.payload.actual_context_tokens
       ?? initialContextSnapshot?.payload.estimated_context_tokens ?? null,
+    initial_model_context_window_tokens: initialContextSnapshot?.payload.model_context_window_tokens ?? null,
+    initial_context_utilization: initialContextSnapshot?.payload.context_utilization ?? null,
     context_measurement_method: initialContextSnapshot?.payload.measurement_method ?? null,
     context_measurement_confidence: initialContextSnapshot?.payload.measurement_confidence ?? null,
     recommendations: Object.fromEntries([...new Set(recommendationsShown.map((event) => event.payload.recommendation_type))].map((type) => [type, true])),
@@ -1639,6 +1826,7 @@ function aggregateTask(events, taskId) {
     max_context_tokens: maxActualContext ?? maxEstimatedContext,
     max_estimated_context_tokens: maxEstimatedContext,
     max_actual_context_tokens: maxActualContext,
+    max_context_utilization: maxContextUtilization,
     total_input_tokens: sumNullable('input_tokens'),
     total_cached_input_tokens: sumNullable('cached_input_tokens'),
     total_output_tokens: sumNullable('output_tokens'),
@@ -2104,6 +2292,10 @@ class TaskAggregator {
 
 function cli(argv) {
   const [command, input = process.cwd(), taskId] = argv;
+  if (command === 'native-context') {
+    process.stdout.write(`${JSON.stringify(readCodexNativeContext({ workspace: input, sessionId: taskId }), null, 2)}\n`);
+    return 0;
+  }
   const { events, invalid } = readTelemetryEvents(input);
   if (command === 'validate') {
     process.stdout.write(`${JSON.stringify({ valid_events: events.length, invalid_events: invalid.length, invalid }, null, 2)}\n`);
@@ -2131,7 +2323,7 @@ function cli(argv) {
     return invalid.length ? 1 : 0;
   }
   if (!taskId) {
-    process.stderr.write('Usage: node telemetry.cjs <list|validate|dataset|analyze|recommendation|report|replay|aggregate> <workspace-or-telemetry-path> [task_id]\n');
+    process.stderr.write('Usage: node telemetry.cjs <native-context|list|validate|dataset|analyze|recommendation|report|replay|aggregate> <workspace-or-telemetry-path> [task_or_session_id]\n');
     return 2;
   }
   if (command === 'aggregate') {
@@ -2164,6 +2356,7 @@ module.exports = {
   getPersonalizedRecommendation,
   renderHumanRetryReport,
   renderTaskReplay,
+  readCodexNativeContext,
   TaskAggregator,
   telemetryRoot
 };

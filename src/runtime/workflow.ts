@@ -100,7 +100,21 @@ export class CodeBuddyWorkflow {
     const snapshot = await this.dependencies.currentSnapshot();
     const result = this.dependencies.contextMeasurement.measure({
       sessionId: snapshot?.sessionId,
-      estimate: snapshot ? {
+      nativeMeasurement: snapshot?.estimate.method === 'api' ? {
+        value: snapshot.estimate.value,
+        unit: 'tokens',
+        confidence: snapshot.estimate.confidence,
+        providerId: snapshot.estimate.providerId ?? 'codex-cli-token-count',
+        capacityTokens: snapshot.estimate.capacityTokens,
+        utilization: snapshot.estimate.utilization,
+        measurementTimestamp: snapshot.estimate.measurementTimestamp,
+        cachedInputTokens: snapshot.estimate.cachedInputTokens,
+        cacheWriteInputTokens: snapshot.estimate.cacheWriteInputTokens,
+        outputTokens: snapshot.estimate.outputTokens,
+        reasoningTokens: snapshot.estimate.reasoningTokens,
+        totalTokens: snapshot.estimate.totalTokens
+      } : undefined,
+      estimate: snapshot?.estimate.method === 'estimate' ? {
         value: snapshot.estimate.value,
         unit: 'estimated_tokens',
         utilization: snapshot.estimate.utilization,
@@ -119,8 +133,11 @@ export class CodeBuddyWorkflow {
       }
     });
     if (showNotification) {
+      const detail = result.measurement.utilization !== undefined && result.measurement.capacityTokens
+        ? `${(result.measurement.utilization * 100).toFixed(1)}% (${result.measurement.value.toLocaleString()} / ${result.measurement.capacityTokens.toLocaleString()} input tokens)`
+        : `${result.measurement.value.toLocaleString()} ${result.measurement.unit.replace('_', ' ')}${result.measurement.unit === 'tokens' ? ' (model context window unavailable)' : ''}`;
       await vscode.window.showInformationMessage(
-        `${result.measurement.terminology}: ${result.measurement.value.toLocaleString()} ${result.measurement.unit.replace('_', ' ')} (${result.measurement.thresholdState}, ${result.measurement.method}).`
+        `${result.measurement.terminology}: ${detail} (${result.measurement.thresholdState}, ${result.measurement.method}).`
       );
     }
     return result;

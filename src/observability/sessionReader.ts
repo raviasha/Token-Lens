@@ -66,20 +66,30 @@ function recordCharacters(record: HookRecord): { observed: number; prompt: numbe
 function latestSnapshot(records: HookRecord[]): SessionContextSnapshot | undefined {
   const record = [...records].reverse().find((item) => item.recordType === 'context.load_snapshot');
   const data = object(record?.data);
-  const load = object(data?.estimatedContextPressure);
+  const actual = object(data?.actualContextUtilization);
+  const estimated = object(data?.estimatedContextPressure);
+  const load = actual ?? estimated;
   const signals = object(data?.observableSignals);
   if (!record || !load || !signals || typeof load.value !== 'number') {
     return undefined;
   }
   const estimate: ContextEstimate = {
     value: load.value,
-    unit: 'estimated_tokens',
+    unit: actual ? 'tokens' : 'estimated_tokens',
     utilization: typeof load.utilization === 'number' ? load.utilization : undefined,
-    method: 'estimate',
+    capacityTokens: typeof load.capacityTokens === 'number' ? load.capacityTokens : undefined,
+    method: actual ? 'api' : 'estimate',
     confidence: load.confidence === 'medium' ? 'medium' : load.confidence === 'high' ? 'high' : 'low',
-    thresholdState: load.thresholdState === 'critical' ? 'critical' : load.thresholdState === 'warning' ? 'warning' : 'normal',
+    thresholdState: load.thresholdState === 'critical' ? 'critical' : load.thresholdState === 'warning' ? 'warning' : load.thresholdState === 'unavailable' ? 'unavailable' : 'normal',
     estimatorVersion: typeof load.estimatorVersion === 'string' ? load.estimatorVersion : undefined,
-    terminology: 'Estimated Context Pressure'
+    providerId: typeof load.measurementProviderId === 'string' ? load.measurementProviderId : undefined,
+    measurementTimestamp: typeof load.measurementTimestamp === 'string' ? load.measurementTimestamp : undefined,
+    cachedInputTokens: typeof load.cachedInputTokens === 'number' ? load.cachedInputTokens : undefined,
+    cacheWriteInputTokens: typeof load.cacheWriteInputTokens === 'number' ? load.cacheWriteInputTokens : undefined,
+    outputTokens: typeof load.outputTokens === 'number' ? load.outputTokens : undefined,
+    reasoningTokens: typeof load.reasoningTokens === 'number' ? load.reasoningTokens : undefined,
+    totalTokens: typeof load.totalTokens === 'number' ? load.totalTokens : undefined,
+    terminology: actual ? 'Actual Context Utilization' : 'Estimated Context Pressure'
   };
   return {
     sessionId: String(record.sessionId ?? 'unknown'),
@@ -96,7 +106,7 @@ function latestSnapshot(records: HookRecord[]): SessionContextSnapshot | undefin
       linesAdded: typeof signals.linesAdded === 'number' ? signals.linesAdded : null,
       linesDeleted: typeof signals.linesDeleted === 'number' ? signals.linesDeleted : null,
       durationSeconds: number(signals.durationSeconds),
-      estimatedTokens: load.value
+      estimatedTokens: actual ? 0 : load.value
     },
     estimate
   };

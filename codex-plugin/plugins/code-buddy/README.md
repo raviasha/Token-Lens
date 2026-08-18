@@ -9,7 +9,7 @@ In Codex, open **Plugins**, select **Code Buddy**, and use its Enable/Disable
 switch. Codex saves this choice for tasks created after the change.
 
 - **Enabled:** every meaningful coding request automatically receives Code
-  Buddy prompt quality, task scope, estimated context pressure, and session-fit
+  Buddy prompt quality, task scope, context-utilization, and session-fit
   checks. Substantive work starts with a compact health line; only the affected
   status changes when a recommendation is available.
 - **Disabled:** new tasks receive no Code Buddy skill, MCP tools, hooks, local
@@ -31,6 +31,12 @@ create a new task.
 
 ## v0.9.0 update notes
 
+- Uses the latest local Codex `token_count` event to show actual input tokens
+  as a percentage of the reported model context window. Reading it is a local
+  operation and consumes no model tokens.
+- Never uses cumulative token usage for current context. When the window is
+  absent, Code Buddy shows actual input tokens without a percentage; when no
+  native event matches, it falls back to explicitly labeled **Estimated Context Pressure**.
 - Adds exact human-retry measurement and replayable schema-1.1 task telemetry.
 - Shows an explicit personalized-feedback status after every prompt without
   making claims before comparable evidence is sufficient.
@@ -94,9 +100,11 @@ node "${PLUGIN_ROOT}/scripts/telemetry.cjs" aggregate /absolute/workspace task_.
 node "${PLUGIN_ROOT}/scripts/telemetry.cjs" validate /absolute/workspace
 node "${PLUGIN_ROOT}/scripts/telemetry.cjs" dataset /absolute/workspace
 node "${PLUGIN_ROOT}/scripts/telemetry.cjs" report /absolute/workspace task_...
+node "${PLUGIN_ROOT}/scripts/telemetry.cjs" native-context /absolute/workspace [session_id]
 ```
 
-Telemetry capture is local and fail-open.
+The native reader stores only token metadata, timestamps, and utilization—not
+raw Codex rollout content. Telemetry capture is local and fail-open.
 
 ## Fresh-task curated handoffs
 

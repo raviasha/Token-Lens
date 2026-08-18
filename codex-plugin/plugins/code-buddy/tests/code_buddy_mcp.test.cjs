@@ -11,16 +11,30 @@ const nodePolicyPath = path.join(pluginRoot, 'scripts', 'project_policy.cjs');
 const pythonPolicyPath = path.join(pluginRoot, 'scripts', 'project_policy.py');
 const fixtures = require('./fixtures/code-buddy-policy-fixtures.json');
 
-function call(name, arguments) {
+function call(name, arguments, environment = {}) {
   const request = {
     jsonrpc: '2.0',
     id: 1,
     method: 'tools/call',
     params: { name, arguments }
   };
-  const result = spawnSync('python3', [mcpPath], { input: `${JSON.stringify(request)}\n`, encoding: 'utf8' });
+  const result = spawnSync('python3', [mcpPath], {
+    input: `${JSON.stringify(request)}\n`,
+    encoding: 'utf8',
+    env: { ...process.env, ...environment }
+  });
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout.trim()).result.structuredContent;
+}
+
+function writeRollout(sessionsRoot, workspace, sessionId, usage, modelContextWindow) {
+  const directory = path.join(sessionsRoot, '2026', '08', '18');
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `rollout-2026-08-18T00-00-00-${sessionId}.jsonl`);
+  fs.writeFileSync(file, [
+    { timestamp: '2026-08-18T00:00:00.000Z', type: 'turn_context', payload: { cwd: workspace } },
+    { timestamp: '2026-08-18T00:00:01.000Z', type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: usage, total_token_usage: usage, model_context_window: modelContextWindow } } }
+  ].map(JSON.stringify).join('\n') + '\n', 'utf8');
 }
 
 function curate(workspace, mode, developerConfirmed) {
@@ -104,6 +118,43 @@ test('human retry analysis always returns model-derived cold-start feedback', ()
   assert.equal(analysis.analysis_schema_version, 'human-retry-analysis-v1');
   assert.match(analysis.feedback, /^Personalized recommendation — Not enough data yet/);
   assert.equal(analysis.reliability.enough_data, false);
+});
+
+test('context measurement automatically uses native Codex input tokens and model window', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-mcp-native-'));
+  const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-codex-sessions-'));
+  writeRollout(sessionsRoot, workspace, 'native-session', {
+    input_tokens: 150_000,
+    cached_input_tokens: 120_000,
+    output_tokens: 4_000,
+    reasoning_output_tokens: 2_000,
+    total_tokens: 156_000
+  }, 200_000);
+
+  const result = call('measure_context', { workspace, sessionId: 'native-session' }, {
+    CODE_BUDDY_CODEX_SESSIONS_DIR: sessionsRoot
+  });
+  assert.equal(result.measurement.method, 'codex_token_count_event');
+  assert.equal(result.measurement.value, 150_000);
+  assert.equal(result.measurement.capacity, 200_000);
+  assert.equal(result.measurement.utilization, 0.75);
+  assert.equal(result.measurement.cachedInputTokens, 120_000);
+  assert.equal(result.measurement.thresholdState, 'warning');
+  assert.equal(result.measurement.terminology, 'Actual Context Utilization');
+});
+
+test('context measurement keeps actual tokens but omits percent when Codex omits capacity', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-mcp-no-capacity-'));
+  const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-codex-sessions-'));
+  writeRollout(sessionsRoot, workspace, 'no-capacity-session', { input_tokens: 8_000, total_tokens: 8_000 }, undefined);
+  const result = call('measure_context', { workspace, sessionId: 'no-capacity-session' }, {
+    CODE_BUDDY_CODEX_SESSIONS_DIR: sessionsRoot
+  });
+  assert.equal(result.measurement.value, 8_000);
+  assert.equal(result.measurement.capacity, null);
+  assert.equal(result.measurement.utilization, null);
+  assert.equal(result.measurement.thresholdState, 'unavailable');
+  assert.equal(result.recommendation, 'continue');
 });
 
 test('Node and Python policy parsers produce the same normalized policy', () => {

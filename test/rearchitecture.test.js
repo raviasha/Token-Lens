@@ -120,12 +120,21 @@ test('context curator preserves pinned facts and exposes excluded history', () =
 test('context measurement follows API then vision then estimate and labels estimates honestly', () => {
   const service = new ContextMeasurementService(DEFAULT_POLICY);
   const result = service.measure({
-    nativeMeasurement: { value: 31_000, unit: 'tokens', confidence: 'high', providerId: 'native-api' },
+    nativeMeasurement: { value: 31_000, unit: 'tokens', confidence: 'high', providerId: 'native-api', capacityTokens: 40_000 },
     visionMeasurement: { value: 30_000, unit: 'tokens', confidence: 'medium', providerId: 'screen' },
     estimate: { value: 29_000, unit: 'estimated_tokens', confidence: 'low', thresholdState: 'warning', utilization: 0.725 }
   });
   assert.equal(result.measurement.method, 'api');
   assert.equal(result.measurement.terminology, 'Actual Context Utilization');
+  assert.equal(result.measurement.utilization, 0.775);
+  assert.equal(result.measurement.capacityTokens, 40_000);
+
+  const actualWithoutCapacity = service.measure({
+    nativeMeasurement: { value: 31_000, unit: 'tokens', confidence: 'high', providerId: 'native-api' }
+  });
+  assert.equal(actualWithoutCapacity.measurement.utilization, undefined);
+  assert.equal(actualWithoutCapacity.measurement.thresholdState, 'unavailable');
+  assert.equal(actualWithoutCapacity.recommendation, 'none');
 
   const estimated = service.measure({
     estimate: { value: 35_000, unit: 'estimated_tokens', confidence: 'low', thresholdState: 'critical', utilization: 0.875, estimatorVersion: 'v2' }
@@ -186,6 +195,33 @@ test('fallback context observation is explicitly estimated', () => {
   assert.equal(snapshot.estimate.unit, 'estimated_tokens');
   assert.equal(snapshot.estimate.terminology, 'Estimated Context Pressure');
   assert.equal(snapshot.signals.durationSeconds, 1);
+});
+
+test('emitted native context snapshots take priority over estimates', () => {
+  const snapshot = observeSession([
+    { schemaVersion: 2, eventId: 'p1', recordType: 'user.prompt', sessionId: 's1', timestamp: '2026-08-18T00:00:00Z', data: { prompt: 'Implement auth.' } },
+    { schemaVersion: 2, eventId: 'c1', recordType: 'context.load_snapshot', sessionId: 's1', timestamp: '2026-08-18T00:00:01Z', data: {
+      actualContextUtilization: {
+        value: 150_000,
+        unit: 'tokens',
+        utilization: 0.75,
+        capacityTokens: 200_000,
+        confidence: 'high',
+        thresholdState: 'warning',
+        measurementProviderId: 'codex-cli-token-count',
+        measurementTimestamp: '2026-08-18T00:00:00.500Z',
+        cachedInputTokens: 120_000
+      },
+      observableSignals: { turns: 1, promptCharacters: 15, observedCharacters: 15 }
+    } }
+  ], DEFAULT_POLICY);
+  assert.equal(snapshot.estimate.method, 'api');
+  assert.equal(snapshot.estimate.terminology, 'Actual Context Utilization');
+  assert.equal(snapshot.estimate.value, 150_000);
+  assert.equal(snapshot.estimate.capacityTokens, 200_000);
+  assert.equal(snapshot.estimate.utilization, 0.75);
+  assert.equal(snapshot.estimate.providerId, 'codex-cli-token-count');
+  assert.equal(snapshot.signals.estimatedTokens, 0);
 });
 
 test('session fit uses a calibrated semantic assessment and an explicit continuation fallback', () => {

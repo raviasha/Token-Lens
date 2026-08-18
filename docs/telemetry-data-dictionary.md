@@ -55,12 +55,16 @@ Recommendation types are `enhance_prompt`, `decompose_task`, `reduce_context`, `
 
 | Event | Important payload fields | Purpose |
 | --- | --- | --- |
-| `context_snapshot` | checkpoint, estimated or actual tokens, measurement method/terminology, turns, compaction count, fresh-session and handoff flags | Captures context at task start, preflight measurement, before work, around compaction, and after an agent response. Actual provider measurements remain separate from estimates. |
+| `context_snapshot` | checkpoint, estimated/actual input tokens, model-window tokens, utilization, method/provider/confidence/timestamp, cached/output/reasoning/total tokens, optional cumulative usage, turns, compaction count, fresh-session and handoff flags | Captures context at task start, preflight measurement, before work, around compaction, and after an agent response. Native Codex measurements remain separate from estimates. |
 | `conversation_compacted` | before/after token estimates, compaction number | Records one compaction. Missing platform measurements remain null. |
 | `session_changed` | previous/new IDs, transition type, handoff flag | Preserves a task moving across sessions. |
 | `handoff_created` | source/handoff estimates and compression ratio | Records curated context creation without storing the handoff text. |
 
-Context token values based on character counts are estimates, never actual provider billing usage.
+For native Codex snapshots, `actual_context_tokens` is
+`last_token_usage.input_tokens` and `context_utilization` divides it by
+`model_context_window_tokens`. `cumulative_usage` is never used for current
+context percentage. Context token values based on character counts remain
+estimates, and neither form is presented as provider billing usage.
 
 ## Engineering and usage events
 
@@ -85,7 +89,8 @@ Derived task records use dataset schema `human-retry-task-v1`. They include
 prompt clarity, initial complexity, actual decomposition, session/context fit,
 acceptance-criteria presence, recommendation exposure/acceptance/application,
 sessions/interactions, broad retry candidates, exact `human_retry_count`,
-material implementation attempts, compactions, maximum actual/estimated context,
+material implementation attempts, compactions, initial/max actual or estimated
+context, native model-window size and utilization,
 token/credit totals, first/final test outcomes, worktree lines and churn,
 agent/developer turns, elapsed time, commit/completion state, first-pass
 success, completed-without-retry, and completed-in-original-session. Null is

@@ -15,10 +15,28 @@ const {
   buildHumanRetryDataset,
   analyzeHumanRetries,
   getPersonalizedRecommendation,
+  readCodexNativeContext,
   renderTaskReplay,
   validateTelemetryEvent,
   TaskAggregator
 } = require('../telemetry.cjs');
+
+function writeCodexRollout(sessionsRoot, sessionId, workspace, tokenEvents) {
+  const directory = path.join(sessionsRoot, '2026', '08', '18');
+  fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `rollout-2026-08-18T12-00-00-${sessionId}.jsonl`);
+  const records = [
+    { timestamp: '2026-08-18T12:00:00.000Z', type: 'turn_context', payload: { cwd: workspace, workspace_roots: [workspace] } },
+    { timestamp: '2026-08-18T12:00:01.000Z', type: 'response_item', payload: { type: 'message', content: 'private prompt content must never be returned' } },
+    ...tokenEvents.map((event, index) => ({
+      timestamp: `2026-08-18T12:00:${String(index + 2).padStart(2, '0')}.000Z`,
+      type: 'event_msg',
+      payload: { type: 'token_count', info: event }
+    }))
+  ];
+  fs.writeFileSync(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+  return file;
+}
 
 const telemetryEnvironmentKeys = [
   'TOKEN_LENS_TELEMETRY_ENABLED',
@@ -171,6 +189,62 @@ function syntheticTaskEvents(index, promptClarity, humanRetryCount, options = {}
   );
   return events;
 }
+
+test('reads the latest native Codex token count without exposing rollout content', () => {
+  const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-codex-sessions-'));
+  const workspace = path.join(sessionsRoot, 'workspace');
+  fs.mkdirSync(workspace, { recursive: true });
+  const sessionId = '01a012cf-21d8-7a63-ad34-3a92e4d71f2a';
+  writeCodexRollout(sessionsRoot, sessionId, workspace, [
+    {
+      total_token_usage: { input_tokens: 150000, cached_input_tokens: 90000, output_tokens: 800, reasoning_output_tokens: 200, total_tokens: 151000 },
+      last_token_usage: { input_tokens: 90000, cached_input_tokens: 50000, output_tokens: 500, reasoning_output_tokens: 100, total_tokens: 90600 },
+      model_context_window: 200000
+    },
+    {
+      total_token_usage: { input_tokens: 300000, cached_input_tokens: 180000, output_tokens: 1500, reasoning_output_tokens: 400, total_tokens: 301900 },
+      last_token_usage: { input_tokens: 150000, cached_input_tokens: 90000, output_tokens: 700, reasoning_output_tokens: 200, total_tokens: 150900 },
+      model_context_window: 200000
+    }
+  ]);
+
+  const result = readCodexNativeContext({ sessionsRoot, workspace, sessionId });
+  assert.equal(result.status, 'actual');
+  assert.equal(result.measurement_method, 'codex_token_count_event');
+  assert.equal(result.input_tokens, 150000);
+  assert.equal(result.cached_input_tokens, 90000);
+  assert.equal(result.output_tokens, 700);
+  assert.equal(result.reasoning_tokens, 200);
+  assert.equal(result.model_context_window_tokens, 200000);
+  assert.equal(result.context_utilization, 0.75);
+  assert.equal(result.cumulative_usage.total_tokens, 301900);
+  assert.equal(JSON.stringify(result).includes('private prompt content'), false);
+  assert.equal(Object.hasOwn(result, 'source_file'), false);
+});
+
+test('reports actual input tokens without inventing a utilization percentage when capacity is missing', () => {
+  const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-codex-capacity-'));
+  const workspace = path.join(sessionsRoot, 'workspace');
+  fs.mkdirSync(workspace, { recursive: true });
+  const sessionId = '01a012cf-21d8-7a63-ad34-3a92e4d71f2b';
+  writeCodexRollout(sessionsRoot, sessionId, workspace, [{
+    total_token_usage: { input_tokens: 42000, total_tokens: 42500 },
+    last_token_usage: { input_tokens: 42000, output_tokens: 500, total_tokens: 42500 }
+  }]);
+
+  const result = readCodexNativeContext({ sessionsRoot, workspace });
+  assert.equal(result.status, 'actual');
+  assert.equal(result.input_tokens, 42000);
+  assert.equal(result.model_context_window_tokens, null);
+  assert.equal(result.context_utilization, null);
+});
+
+test('fails open when no matching Codex rollout is available', () => {
+  const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-codex-empty-'));
+  const result = readCodexNativeContext({ sessionsRoot, workspace: path.join(sessionsRoot, 'missing') });
+  assert.equal(result.status, 'unavailable');
+  assert.equal(result.measurement_method, 'unavailable');
+});
 
 test.afterEach(() => {
   for (const key of telemetryEnvironmentKeys) delete process.env[key];
@@ -402,7 +476,8 @@ test('preflight events preserve the thresholds active at capture time', () => {
   process.env.TOKEN_LENS_TASK_DECOMPOSITION_THRESHOLD = '55';
   process.env.TOKEN_LENS_CONTEXT_WARNING_THRESHOLD = '0.45';
   process.env.TOKEN_LENS_SESSION_FIT_THRESHOLD = '60';
-  hook(workspace, 'UserPromptSubmit', { prompt: 'Implement the API change and run tests.' });
+  const submitted = hook(workspace, 'UserPromptSubmit', { prompt: 'Implement the API change and run tests.' });
+  const taskId = submitted.emitted.find((event) => event.event_type === 'task_created').task_id;
   postTool(workspace, 'mcp__code_buddy__review_prompt', {}, {
     structuredContent: { score: 80, interventionRecommended: false }
   });
@@ -410,7 +485,20 @@ test('preflight events preserve the thresholds active at capture time', () => {
     structuredContent: { complexityScore: 50, decompositionRecommended: false }
   });
   postTool(workspace, 'mcp__code_buddy__measure_context', {}, {
-    structuredContent: { measurement: { utilization: 0.4 }, recommendation: 'continue' }
+    structuredContent: { measurement: {
+      method: 'codex_token_count_event',
+      value: 80_000,
+      unit: 'tokens',
+      utilization: 0.4,
+      capacity: 200_000,
+      confidence: 'high',
+      providerId: 'codex-cli-token-count',
+      measurementTimestamp: '2026-08-18T00:00:00.000Z',
+      cachedInputTokens: 60_000,
+      outputTokens: 2_000,
+      reasoningTokens: 500,
+      totalTokens: 82_500
+    }, recommendation: 'continue' }
   });
   postTool(workspace, 'mcp__code_buddy__assess_session_fit', {}, {
     structuredContent: { newTaskLikelihood: 30, freshTaskRecommended: false }
@@ -420,6 +508,18 @@ test('preflight events preserve the thresholds active at capture time', () => {
   assert.equal(preflight.payload.task_decomposition.threshold, 0.55);
   assert.equal(preflight.payload.context_pressure.threshold, 0.45);
   assert.equal(preflight.payload.session_fit.threshold, 0.6);
+  const snapshot = readTelemetryEvents(telemetry).events.find((event) => event.event_type === 'context_snapshot'
+    && event.payload.checkpoint === 'preflight_measurement');
+  assert.equal(snapshot.payload.actual_context_tokens, 80_000);
+  assert.equal(snapshot.payload.model_context_window_tokens, 200_000);
+  assert.equal(snapshot.payload.context_utilization, 0.4);
+  assert.equal(snapshot.payload.cached_input_tokens, 60_000);
+  assert.equal(snapshot.payload.measurement_provider_id, 'codex-cli-token-count');
+  const aggregate = aggregateTask(readTelemetryEvents(telemetry).events, taskId);
+  assert.equal(aggregate.initial_actual_context_tokens, 80_000);
+  assert.equal(aggregate.initial_model_context_window_tokens, 200_000);
+  assert.equal(aggregate.initial_context_utilization, 0.4);
+  assert.equal(aggregate.max_context_utilization, 0.4);
 });
 
 test('links recommendation exposure, acceptance, and observed application separately', () => {

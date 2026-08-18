@@ -85,19 +85,32 @@ export class ContextMeasurementService {
       };
     }
     const candidate = resolution.candidate;
+    const actual = resolution.method === 'api';
+    const capacityTokens = 'capacityTokens' in candidate && typeof candidate.capacityTokens === 'number'
+      ? candidate.capacityTokens
+      : undefined;
     const utilization = 'utilization' in candidate && typeof candidate.utilization === 'number'
       ? candidate.utilization
-      : candidate.value / Math.max(1, this.policy.context.estimatedContextCapacityTokens);
-    const thresholdState = classifyContext(utilization, this.policy);
-    const actual = resolution.method === 'api';
+      : actual
+        ? capacityTokens ? candidate.value / Math.max(1, capacityTokens) : undefined
+        : candidate.value / Math.max(1, this.policy.context.estimatedContextCapacityTokens);
+    const thresholdState = utilization === undefined ? 'unavailable' : classifyContext(utilization, this.policy);
     const measurement: ContextEstimate = {
       value: Math.max(0, Math.round(candidate.value)),
       unit: actual ? 'tokens' : 'estimated_tokens',
-      utilization,
+      ...(utilization !== undefined ? { utilization } : {}),
+      ...(capacityTokens !== undefined ? { capacityTokens } : {}),
       method: resolution.method,
       confidence: candidate.confidence,
       thresholdState,
       ...('estimatorVersion' in candidate && candidate.estimatorVersion ? { estimatorVersion: candidate.estimatorVersion } : {}),
+      ...('measurementTimestamp' in candidate && candidate.measurementTimestamp ? { measurementTimestamp: candidate.measurementTimestamp } : {}),
+      ...('cachedInputTokens' in candidate && typeof candidate.cachedInputTokens === 'number' ? { cachedInputTokens: candidate.cachedInputTokens } : {}),
+      ...('cacheWriteInputTokens' in candidate && typeof candidate.cacheWriteInputTokens === 'number' ? { cacheWriteInputTokens: candidate.cacheWriteInputTokens } : {}),
+      ...('outputTokens' in candidate && typeof candidate.outputTokens === 'number' ? { outputTokens: candidate.outputTokens } : {}),
+      ...('reasoningTokens' in candidate && typeof candidate.reasoningTokens === 'number' ? { reasoningTokens: candidate.reasoningTokens } : {}),
+      ...('totalTokens' in candidate && typeof candidate.totalTokens === 'number' ? { totalTokens: candidate.totalTokens } : {}),
+      providerId: resolution.providerId,
       terminology: actual ? 'Actual Context Utilization' : 'Estimated Context Pressure'
     };
     return {
@@ -107,7 +120,7 @@ export class ContextMeasurementService {
       measurement,
       providerId: resolution.providerId,
       recommendation: thresholdState === 'critical' ? 'curate_or_start_fresh' : thresholdState === 'warning' ? 'consider_curation' : 'none',
-      availableActions: thresholdState === 'normal'
+      availableActions: thresholdState === 'normal' || thresholdState === 'unavailable'
         ? ['continue_unchanged']
         : ['start_fresh', 'curate_current', 'continue_unchanged']
     };

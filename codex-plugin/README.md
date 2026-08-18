@@ -26,7 +26,7 @@ this Token Lens source checkout.
 The native **Plugins → Code Buddy → Enable/Disable** switch is persistent for
 new tasks. When enabled and trusted, Code Buddy automatically performs its
 four-check preflight and starts substantive work with a compact prompt quality,
-task scope, estimated context pressure, and session-fit health line. A fresh task created from accepted
+task scope, context utilization, and session-fit health line. A fresh task created from accepted
 curated context waits until the marked handoff is pasted or the developer
 submits exactly `Code Buddy: continue without curated context`.
 
@@ -40,6 +40,13 @@ codex plugin add code-buddy@code-buddy
 
 ## v0.9.0 update notes
 
+- Reads Codex's latest local `token_count` event and reports current input
+  tokens as a percentage of the reported model context window. This local file
+  read does not invoke a model or consume tokens.
+- Uses actual `last_token_usage.input_tokens`, never cumulative
+  `total_token_usage`, for context pressure. If model capacity is absent, it
+  shows actual input tokens without inventing a percentage; the existing
+  **Estimated Context Pressure** remains a clearly labeled fallback.
 - Adds schema-1.1 task telemetry and exact human-requested retry measurement.
 - Shows a model-presented personalized-feedback status after every prompt,
   including explicit cold-start and low-reliability states.
@@ -80,7 +87,8 @@ measurement:
 
 Raise `enhanceBelow` for stricter prompt enhancement; lower the other
 thresholds for earlier decomposition, pressure, or fresh-task advice. Context
-without sufficient local evidence is shown as **checked — limited evidence**.
+without a matching native event or sufficient fallback evidence is shown as
+**checked — limited evidence**.
 A session-fit recommendation offers a curated fresh task or **Continue unchanged**; it never acts automatically.
 
 Every submitted prompt also receives a model-presented `Personalized
@@ -109,9 +117,12 @@ node plugins/code-buddy/scripts/telemetry.cjs aggregate /absolute/workspace task
 node plugins/code-buddy/scripts/telemetry.cjs validate /absolute/workspace
 node plugins/code-buddy/scripts/telemetry.cjs dataset /absolute/workspace
 node plugins/code-buddy/scripts/telemetry.cjs report /absolute/workspace task_...
+node plugins/code-buddy/scripts/telemetry.cjs native-context /absolute/workspace [session_id]
 ```
 
-Telemetry failures never gate or stop Codex.
+The native reader returns only token metadata, timestamp, and utilization; it
+does not copy prompts, responses, or source from Codex rollout files into Code
+Buddy telemetry. Telemetry failures never gate or stop Codex.
 
 To update, download a newer repository version and run the two installation
 commands again from the new local path.

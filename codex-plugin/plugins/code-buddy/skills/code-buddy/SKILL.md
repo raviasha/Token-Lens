@@ -1,6 +1,6 @@
 ---
 name: code-buddy
-description: Use for meaningful coding prompts in Codex when Code Buddy is installed. Run the developer-controlled prompt quality, task scope, estimated context pressure, and session-fit checks before substantial implementation.
+description: Use for meaningful coding prompts in Codex when Code Buddy is installed. Run the developer-controlled prompt quality, task scope, actual-or-estimated context utilization, and session-fit checks before substantial implementation.
 ---
 
 # Code Buddy for Codex
@@ -22,15 +22,16 @@ that changes project state:
 3. Prepare a semantic task-complexity assessment, then use the Code Buddy
    `decompose_task` tool with the unchanged user task and that assessment in
    `modelAssessment`.
-4. Call `measure_context` to obtain the best available measurement. Treat
-   empty or fallback evidence as **Estimated Context Pressure — limited
+4. Call `measure_context` to obtain the best available measurement. It reads
+   the latest native Codex `token_count` event automatically when available.
+   Treat empty or fallback evidence as **Estimated Context Pressure — limited
    evidence**, never as an actual-context zero.
 5. Prepare a semantic session-fit assessment, then call
    `assess_session_fit` with the unchanged prompt, prior meaningful prompt
    when available, and `modelAssessment`.
 6. Read all four results. Before substantive work, begin with:
 
-   `Code Buddy: prompt quality <status> · task scope <status> · estimated context pressure <status> · session fit <status>`
+   `Code Buddy: prompt quality <status> · task scope <status> · context utilization <status> · session fit <status>`
 
    Replace only the affected status with an action such as “enhancement
    available”, “decomposition available”, “checked — limited evidence”, or
@@ -127,10 +128,15 @@ developer's behalf.
 When Code Buddy reports warning or critical context pressure, call
 `measure_context` before discussing the value.
 
-- Values from a supplied provider API are **Actual Context Utilization** only
-  when the provider says they are complete active-context usage.
-- Values from the local event log are **Estimated Context Pressure**. They are
-  not billing data or an exact context-window measurement.
+- A native Codex `token_count` event is **Actual Context Utilization**. Use
+  `last_token_usage.input_tokens` as the current-context numerator and
+  `model_context_window` as the denominator. Never use cumulative
+  `total_token_usage` for the percentage.
+- If Codex exposes actual input tokens without the model window, show the
+  actual token count and state that the percentage is unavailable.
+- Values from Code Buddy's observable-text fallback are **Estimated Context
+  Pressure**. They are not billing data or an exact context-window
+  measurement.
 - Offer a fresh-task handoff or current-task curation only after the developer
   chooses it. Prepare a minimum-sufficient semantic bundle in `modelBundle`
   before calling `curate_context`; preserve pinned items and state which

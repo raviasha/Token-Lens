@@ -21,6 +21,8 @@ test('all installation guides document the shared Code Buddy health policy', () 
     assert.match(contents, /criticalAt: 0\.85/);
     assert.match(contents, /recommendFreshTaskAtOrAbove: 75/);
     assert.match(contents, /estimated context pressure/i);
+    assert.match(contents, /token_count/);
+    assert.match(contents, /model context window/i);
     assert.match(contents, /continue unchanged/i);
   }
 });

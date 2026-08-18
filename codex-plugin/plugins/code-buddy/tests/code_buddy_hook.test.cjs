@@ -59,6 +59,27 @@ test('injects automatic Code Buddy preflight for a meaningful request', () => {
   assert.match(context, /Personalized recommendation — Not enough data/);
 });
 
+test('surfaces warning native context snapshots without relabeling them as estimates', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-native-warning-'));
+  const logPath = path.join(workspace, '.code-buddy', 'codex-session.jsonl');
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  fs.writeFileSync(logPath, [
+    { schemaVersion: 2, eventId: 'prior-prompt', recordType: 'user.prompt', sessionId: 'native-warning', timestamp: '2026-08-18T00:00:00.000Z', data: { prompt: 'Implement authentication token refresh.' } },
+    { schemaVersion: 2, eventId: 'native-context', recordType: 'context.load_snapshot', sessionId: 'native-warning', timestamp: '2026-08-18T00:00:01.000Z', data: { actualContextUtilization: { value: 150_000, unit: 'tokens', utilization: 0.75, capacityTokens: 200_000, thresholdState: 'warning' } } }
+  ].map(JSON.stringify).join('\n') + '\n', 'utf8');
+
+  const { output } = runPluginHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'native-warning',
+    cwd: workspace,
+    prompt: 'Continue authentication work and add expiry tests.'
+  }, workspace);
+  const context = output?.hookSpecificOutput?.additionalContext || '';
+  assert.match(context, /warning Actual Context Utilization/);
+  assert.match(context, /native input-token\/model-window ratio/);
+  assert.doesNotMatch(context, /Never claim this estimate is actual/);
+});
+
 test('requires all four automatic Code Buddy tools before implementation', () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-four-checks-'));
   const environment = { TOKEN_LENS_PREFLIGHT_DENIALS_BEFORE_FALLBACK: '5' };

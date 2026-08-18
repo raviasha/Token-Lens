@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -86,6 +87,35 @@ def env_float(name, default):
         return float(os.environ.get(name, default))
     except (TypeError, ValueError):
         return default
+
+
+def read_native_codex_context(workspace, session_id):
+    telemetry = Path(__file__).with_name("telemetry.cjs")
+    command = ["node", str(telemetry), "native-context", str(workspace)]
+    if session_id:
+        command.append(str(session_id))
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=3, check=False)
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return None
+        result = json.loads(completed.stdout)
+        return result if result.get("status") == "actual" else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return None
+
+
+def latest_emitted_context_measurement(records):
+    for record in reversed(records):
+        if record.get("recordType") != "context.load_snapshot":
+            continue
+        data = record.get("data") or {}
+        actual = data.get("actualContextUtilization")
+        if isinstance(actual, dict) and isinstance(actual.get("value"), (int, float)):
+            return actual
+        estimated = data.get("estimatedContextPressure")
+        if isinstance(estimated, dict) and isinstance(estimated.get("value"), (int, float)):
+            return estimated
+    return None
 
 
 def now_iso():
@@ -772,19 +802,27 @@ def append_context_snapshot(log_path, session_id, workspace, prompt_event_id, ev
         return
     session = session_metrics(records)
     timestamp = now_iso()
-    threshold_state = context_turn["warning"]["thresholdState"]
+    native = read_native_codex_context(workspace, session_id)
+    utilization = native.get("context_utilization") if native else None
+    if isinstance(utilization, (int, float)):
+        warning_threshold = min(1.0, max(0.0, env_float("TOKEN_LENS_CONTEXT_WARNING_THRESHOLD", 0.70)))
+        critical_threshold = min(1.0, max(warning_threshold, env_float("TOKEN_LENS_CONTEXT_CRITICAL_THRESHOLD", 0.85)))
+        threshold_state = "critical" if utilization >= critical_threshold else "warning" if utilization >= warning_threshold else "normal"
+    else:
+        threshold_state = "unavailable" if native else context_turn["warning"]["thresholdState"]
+    measurement_value = native.get("input_tokens") if native else context_turn["contextExposureTokensEstimate"]
     record = {
         "schemaVersion": 2,
         "eventId": "context_" + hash_value({
             "sessionId": session_id,
             "promptEventId": prompt_event_id,
             "eventId": event_id,
-            "value": context_turn["contextExposureTokensEstimate"],
+            "value": measurement_value,
             "estimatorVersion": CONTEXT_ESTIMATOR_VERSION,
         }),
         "recordType": "context.load_snapshot",
         "source": "analytics",
-        "sourceEventType": "estimated_context_pressure",
+        "sourceEventType": "actual_context_utilization" if native else "estimated_context_pressure",
         "sessionId": session_id,
         "turnId": None,
         "parentId": prompt_event_id,
@@ -793,7 +831,24 @@ def append_context_snapshot(log_path, session_id, workspace, prompt_event_id, ev
         "recordedAt": timestamp,
         "workspace": str(workspace),
         "data": {
-            "estimatedContextPressure": {
+            **({"actualContextUtilization": {
+                "value": native.get("input_tokens"),
+                "unit": "tokens",
+                "utilization": native.get("context_utilization"),
+                "capacityTokens": native.get("model_context_window_tokens"),
+                "measurementMethod": native.get("measurement_method", "codex_token_count_event"),
+                "measurementProviderId": "codex-cli-token-count",
+                "measurementTimestamp": native.get("measurement_timestamp"),
+                "confidence": native.get("measurement_confidence", "high"),
+                "thresholdState": threshold_state,
+                "terminology": "Actual Context Utilization",
+                "cachedInputTokens": native.get("cached_input_tokens"),
+                "cacheWriteInputTokens": native.get("cache_write_input_tokens"),
+                "outputTokens": native.get("output_tokens"),
+                "reasoningTokens": native.get("reasoning_tokens"),
+                "totalTokens": native.get("total_tokens"),
+                "cumulativeUsage": native.get("cumulative_usage"),
+            }} if native else {"estimatedContextPressure": {
                 "value": context_turn["contextExposureTokensEstimate"],
                 "unit": "estimated_tokens",
                 "utilization": context_turn["warning"]["utilization"],
@@ -803,7 +858,7 @@ def append_context_snapshot(log_path, session_id, workspace, prompt_event_id, ev
                 "thresholdState": threshold_state,
                 "terminology": "Estimated Context Pressure",
                 "estimatorVersion": CONTEXT_ESTIMATOR_VERSION,
-            },
+            }}),
             "observableSignals": {
                 "turns": session["prompts"],
                 "promptCharacters": session["promptChars"],
@@ -818,7 +873,7 @@ def append_context_snapshot(log_path, session_id, workspace, prompt_event_id, ev
                 "durationSeconds": session["durationSeconds"],
             },
             "providerUsageObserved": bool(session["providerUsage"]),
-            "providerUsageLimitation": "Per-event usage does not prove complete active-context utilization.",
+            "providerUsageLimitation": "Native Codex token_count input usage is used when available; per-event provider usage alone does not prove complete active-context utilization.",
         },
     }
     append_record(log_path, record)
@@ -876,18 +931,22 @@ def health_status(interventions, category, event_type, detail=None):
     return "not recorded"
 
 
-def recommendation(prompt, quality, decomposition, outcome, records, context_turn=None):
+def recommendation(prompt, quality, decomposition, outcome, records, context_turn=None, context_measurement=None):
     metrics = (outcome.get("data") or {}).get("metrics") if outcome else None
     failures = sum(record.get("recordType") in {"tool.failed", "error.occurred"} for record in records)
     missing = {item["key"] for item in quality["checks"] if not item["present"]}
     observed = observed_size((outcome or {}).get("data"))
     template = "Implement [goal] in [files or scope]. Context: [relevant problem]. Constraints: [constraints]. Done when: [acceptance criteria]. Validate with: [command]."
-    if context_turn and context_turn["warning"]["level"] == "high":
+    actual_context = context_measurement if isinstance(context_measurement, dict) and context_measurement.get("unit") == "tokens" else None
+    context_state = actual_context.get("thresholdState") if actual_context else (context_turn["warning"]["thresholdState"] if context_turn else None)
+    if context_state == "critical":
         title = "Start fresh with a compact handoff"
-        why = "This turn reached high Estimated Context Pressure, so continuing the same session may resend a large amount of prior context."
+        why = "The latest context measurement is critical, so continuing the same session may resend a large amount of prior context."
         priority = "high"
+        measurement_detail = (f"Actual Context Utilization: {actual_context['utilization']:.1%} "
+                              f"({format_number(actual_context['value'])} / {format_number(actual_context.get('capacityTokens'))} input tokens).") if actual_context and isinstance(actual_context.get("utilization"), (int, float)) else f"Estimated Context Pressure: approximately {format_number(context_turn['contextExposureTokensEstimate'])} estimated tokens."
         bullets = [
-            f"Estimated Context Pressure: approximately {format_number(context_turn['contextExposureTokensEstimate'])} estimated tokens across {context_turn['modelInteractionsEstimate']} estimated model interaction(s).",
+            measurement_detail,
             "First ask Copilot for a handoff summary of the current state, decisions, unresolved issues, relevant files, and next action in 300 words or fewer; do not edit files.",
             "Start a new Copilot session and include only that summary plus the relevant files. Avoid `continue` or re-pasting the full transcript."
         ]
@@ -907,9 +966,9 @@ def recommendation(prompt, quality, decomposition, outcome, records, context_tur
         why = "The observed worktree change is large enough that smaller phases should be easier to review."
         priority = "high"
         bullets = ["Name the files or module to change.", "Ask for one coherent phase at a time."]
-    elif context_turn and context_turn["warning"]["level"] == "medium":
+    elif context_state == "warning":
         title = "Keep the next context focused"
-        why = "Estimated Context Pressure is growing relative to this session or the configured threshold."
+        why = "Context utilization has reached the configured warning threshold."
         priority = "medium"
         bullets = [
             "Start the next prompt with a short summary rather than repeating the conversation.",
@@ -971,7 +1030,8 @@ def build_feedback(records, session_id):
     outcome_data = (outcome or {}).get("data") or {}
     metrics = outcome_data.get("metrics") or {}
     context_turn = latest_context_turn(selected, (prompt_record or {}).get("eventId"))
-    recommendation_data = recommendation(prompt, quality, decomposition, outcome, selected, context_turn)
+    context_measurement = latest_emitted_context_measurement(selected)
+    recommendation_data = recommendation(prompt, quality, decomposition, outcome, selected, context_turn, context_measurement)
     observed = observed_size(outcome_data)
     session = session_metrics(selected)
     interventions = intervention_metrics(session_id)
@@ -1000,13 +1060,13 @@ def build_feedback(records, session_id):
         f"- Task decomposition: **{decomposition['score']}/100** ({len(decomposition['steps'])} detected step(s); {scope_status})",
         f"- Observed turn size: **{observed}**",
         f"- Worktree delta: **{metrics.get('filesChanged', 0)} file(s)**, **{format_number(metrics.get('linesAdded'))} added / {format_number(metrics.get('linesDeleted'))} deleted lines**",
-        f"- Estimated Context Pressure: **~{format_number(context_turn['contextExposureTokensEstimate'])} estimated tokens** ({context_turn['warning']['thresholdState']}; {context_status})" if context_turn else f"- Estimated Context Pressure: **not measured** ({context_status})",
+        (f"- Actual Context Utilization: **{context_measurement['utilization']:.1%} ({format_number(context_measurement['value'])} / {format_number(context_measurement.get('capacityTokens'))} input tokens)** ({context_measurement.get('thresholdState', 'unavailable')}; {context_status})" if isinstance(context_measurement.get('utilization'), (int, float)) else f"- Actual input usage: **{format_number(context_measurement['value'])} tokens** (model context window unavailable; {context_status})") if context_measurement and context_measurement.get("unit") == "tokens" else (f"- Estimated Context Pressure: **~{format_number(context_turn['contextExposureTokensEstimate'])} estimated tokens** ({context_turn['warning']['thresholdState']}; {context_status})" if context_turn else f"- Context measurement: **not available** ({context_status})"),
         f"- Session fit: **{session_fit_status}**",
         "",
         "## Suggested Next Prompt",
         f"> {recommendation_data['template']}",
         "",
-        "_Detailed metrics are in `Code Buddy Analytics.md`. Provider usage is used when present; otherwise context numbers are deterministic observed-text estimates._",
+        "_Detailed metrics are in `Code Buddy Analytics.md`. Native Codex token-count events are used when available; otherwise context numbers are explicitly labeled deterministic estimates._",
         "",
     ])
     return "\n".join(lines)
@@ -1024,7 +1084,8 @@ def build_analytics(records, session_id):
     metrics = outcome_data.get("metrics") or {}
     session = session_metrics(selected)
     context_turn = latest_context_turn(selected, (prompt_record or {}).get("eventId"))
-    recommendation_data = recommendation(prompt, quality, decomposition, outcome, selected, context_turn)
+    context_measurement = latest_emitted_context_measurement(selected)
+    recommendation_data = recommendation(prompt, quality, decomposition, outcome, selected, context_turn, context_measurement)
     interventions = intervention_metrics(session_id)
     lines = [
         "# Code Buddy Analytics",
@@ -1044,7 +1105,10 @@ def build_analytics(records, session_id):
         f"| Observed files changed | {session['filesChanged']} |",
         f"| Observed lines added / deleted | {format_number(session['linesAdded'])} / {format_number(session['linesDeleted'])} |",
         "",
-        "## Estimated Context Pressure",
+        "## Context Measurement",
+        f"Latest: **Actual Context Utilization — {context_measurement['utilization']:.1%} ({format_number(context_measurement['value'])} / {format_number(context_measurement.get('capacityTokens'))} input tokens)**" if context_measurement and context_measurement.get("unit") == "tokens" and isinstance(context_measurement.get("utilization"), (int, float)) else (f"Latest: **Actual input usage — {format_number(context_measurement['value'])} tokens; model context window unavailable**" if context_measurement and context_measurement.get("unit") == "tokens" else "Latest: **Estimated Context Pressure (native token count unavailable)**"),
+        "",
+        "### Fallback estimate diagnostics",
         "| Measure | Characters | Estimated tokens* |",
         "|---|---:|---:|",
         f"| User prompts | {format_number(session['promptChars'])} | {math.ceil(session['promptChars'] / 4) if session['promptChars'] else 0:,} |",
