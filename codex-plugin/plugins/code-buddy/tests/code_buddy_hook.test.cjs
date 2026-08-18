@@ -174,6 +174,21 @@ test('releases a target session after explicit no-context continuation', () => {
   assert.match(bypassed.output?.hookSpecificOutput?.additionalContext || '', /mcp__code_buddy__review_prompt/);
 });
 
+test('ignores transport whitespace around explicit no-context continuation', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-bypass-whitespace-'));
+  writePendingHandoff(workspace);
+  const bypassed = runPluginHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'target-session',
+    cwd: workspace,
+    prompt: '  Code Buddy: continue without curated context\n'
+  }, workspace);
+
+  assert.equal(fs.existsSync(path.join(workspace, '.code-buddy', '.state', 'pending-fresh-handoff.json')), false);
+  assert.ok(bypassed.records.some((record) => record.recordType === 'context.handoff_bypassed'));
+  assert.match(bypassed.output?.hookSpecificOutput?.additionalContext || '', /mcp__code_buddy__review_prompt/);
+});
+
 test('does not accept a non-exact no-context continuation', () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-inexact-'));
   writePendingHandoff(workspace);

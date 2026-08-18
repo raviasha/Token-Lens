@@ -115,5 +115,7 @@ either paste the marked handoff or submit exactly:
 
 `Code Buddy: continue without curated context`
 
+Surrounding whitespace added during submission is ignored; changed wording or
+punctuation is not accepted as the explicit bypass.
 The source task remains usable. Curation for the current task never creates a
 waiting state.

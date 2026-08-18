@@ -370,6 +370,8 @@ the marked bundle or submits exactly:
 
 `Code Buddy: continue without curated context`
 
+Code Buddy ignores surrounding whitespace added by the client, including a
+trailing transport newline, but still rejects changed wording or punctuation.
 Pasting the bundle records `context.handoff_pasted`; the explicit continuation
 records `context.handoff_bypassed`. The source chat that created the handoff
 continues normally, and **Curate current task** never creates a waiting state.

@@ -511,7 +511,9 @@ function clearPendingHandoff(logPath) {
 }
 
 function isHandoffBypassPrompt(prompt) {
-  return String(prompt || '') === 'Code Buddy: continue without curated context';
+  // Codex can append transport whitespace that is not visible in the submitted prompt.
+  return typeof prompt === 'string'
+    && prompt.trim() === 'Code Buddy: continue without curated context';
 }
 
 function hasHandoffMarker(prompt, handoffId) {
