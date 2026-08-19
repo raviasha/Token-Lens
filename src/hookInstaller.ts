@@ -33,6 +33,7 @@ export interface HookSettings {
   contextEstimatedCapacityTokens: number;
   contextWarningThreshold: number;
   contextCriticalThreshold: number;
+  contextPauseThreshold: number;
   contextAllowVisionVerification: boolean;
   contextOfferCurationOnNewSession: boolean;
   contextOfferCurationOnNewTask: boolean;
@@ -139,6 +140,7 @@ function getSettings(root: vscode.Uri): HookSettings & { logPath: string; feedba
   const contextEstimatedCapacityTokens = policy.context.estimatedContextCapacityTokens;
   const contextWarningThreshold = policy.context.warningThreshold;
   const contextCriticalThreshold = policy.context.criticalThreshold;
+  const contextPauseThreshold = policy.context.pauseThreshold;
   const contextAllowVisionVerification = policy.context.allowVisionVerification;
   const contextOfferCurationOnNewSession = policy.context.offerCurationOnNewSession;
   const contextOfferCurationOnNewTask = policy.context.offerCurationOnNewTask;
@@ -174,6 +176,7 @@ function getSettings(root: vscode.Uri): HookSettings & { logPath: string; feedba
     contextEstimatedCapacityTokens,
     contextWarningThreshold,
     contextCriticalThreshold,
+    contextPauseThreshold,
     contextAllowVisionVerification,
     contextOfferCurationOnNewSession,
     contextOfferCurationOnNewTask,
@@ -271,6 +274,7 @@ function createHookEntry(
       TOKEN_LENS_CONTEXT_CAPACITY_TOKENS: String(settings.contextEstimatedCapacityTokens),
       TOKEN_LENS_CONTEXT_WARNING_THRESHOLD: String(settings.contextWarningThreshold),
       TOKEN_LENS_CONTEXT_CRITICAL_THRESHOLD: String(settings.contextCriticalThreshold),
+      TOKEN_LENS_CONTEXT_PAUSE_THRESHOLD: String(settings.contextPauseThreshold),
       TOKEN_LENS_CONTEXT_ALLOW_VISION: String(settings.contextAllowVisionVerification),
       TOKEN_LENS_CONTEXT_OFFER_CURATION_ON_NEW_SESSION: String(settings.contextOfferCurationOnNewSession),
       TOKEN_LENS_CONTEXT_OFFER_CURATION_ON_NEW_TASK: String(settings.contextOfferCurationOnNewTask),

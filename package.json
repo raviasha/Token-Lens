@@ -16,6 +16,7 @@
     "Other"
   ],
   "activationEvents": [
+    "onCommand:tokenLens.createProjectConfig",
     "onCommand:tokenLens.installHooks",
     "onCommand:tokenLens.removeHooks",
     "onCommand:tokenLens.openLog",
@@ -36,6 +37,10 @@
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "tokenLens.createProjectConfig",
+        "title": "Code Buddy: Create or Open Project Configuration"
+      },
       {
         "command": "tokenLens.installHooks",
         "title": "Code Buddy: Install Copilot Hooks"
@@ -389,17 +394,24 @@
         },
         "tokenLens.context.warningThreshold": {
           "type": "number",
-          "default": 0.7,
+          "default": 0.55,
           "minimum": 0,
           "maximum": 1,
           "description": "Context utilization ratio that triggers a warning. Applies to actual utilization when Codex exposes a model window and to the labeled fallback estimate otherwise."
         },
         "tokenLens.context.criticalThreshold": {
           "type": "number",
-          "default": 0.85,
+          "default": 0.65,
           "minimum": 0,
           "maximum": 1,
-          "description": "Estimated Context Pressure ratio that triggers a critical recommendation."
+          "description": "Context utilization ratio that recommends developer-controlled curation."
+        },
+        "tokenLens.context.pauseThreshold": {
+          "type": "number",
+          "default": 0.7,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Actual Context Utilization ratio at which the Codex plugin pauses new implementation tools until the developer chooses curation or continuing unchanged."
         },
         "tokenLens.context.allowVisionVerification": {
           "type": "boolean",

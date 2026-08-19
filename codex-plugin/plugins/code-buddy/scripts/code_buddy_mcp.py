@@ -18,7 +18,7 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Any
-from project_policy import load_project_policy
+from project_policy import create_project_policy, load_project_policy
 
 
 SERVER_NAME = "code-buddy"
@@ -470,7 +470,7 @@ def estimate_context(arguments: dict[str, Any]) -> dict[str, Any]:
             "status": "ok",
             "measurement": measurement,
             "healthLineStatus": context_health_line_status(measurement),
-            "recommendation": "curate_or_start_fresh" if threshold in {"warning", "critical"} else "continue",
+            "recommendation": "curate_or_start_fresh" if threshold == "critical" else "continue",
         }
         append_intervention(arguments, "context.measured", result)
         return result
@@ -499,7 +499,7 @@ def estimate_context(arguments: dict[str, Any]) -> dict[str, Any]:
         "status": "ok" if records else "fallback",
         "measurement": measurement,
         "healthLineStatus": context_health_line_status(measurement, limited_evidence=not records),
-        "recommendation": "curate_or_start_fresh" if threshold in {"warning", "critical"} else "continue",
+        "recommendation": "curate_or_start_fresh" if threshold == "critical" else "continue",
         "limitation": "No matching native Codex token_count event was available. This fallback is an estimate from observable local events, not a billing value.",
     }
     append_intervention(arguments, "context.measured", result)
@@ -686,6 +686,13 @@ def analyze_human_retries(arguments: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def create_project_config(arguments: dict[str, Any]) -> dict[str, Any]:
+    workspace = as_string(arguments.get("workspace"))
+    if not workspace:
+        raise ValueError("workspace is required.")
+    return create_project_policy(workspace)
+
+
 def record_intervention(arguments: dict[str, Any]) -> dict[str, Any]:
     event_type = as_string(arguments.get("eventType"))
     data = arguments.get("data")
@@ -715,6 +722,7 @@ TOOLS = [
     tool("curate_context", "Create a previewable minimum-sufficient handoff only after the developer chooses curation. Set developerConfirmed to true only after the developer chose fresh-task curation; that creates a marked handoff that must be pasted into the fresh task. Pass modelBundle when a Codex semantic curation has been prepared.", ["workspace", "targetTask", "mode"], {"workspace": WORKSPACE, "sessionId": SESSION, "targetTask": {"type": "string"}, "mode": {"type": "string", "enum": ["fresh_task", "continue_current"]}, "developerConfirmed": {"type": "boolean", "description": "True only after the developer explicitly chose fresh-task curation."}, "conversationHistory": {"type": "array", "items": {"type": "string"}}, "knownDecisions": {"type": "array", "items": {"type": "string"}}, "relevantFiles": {"type": "array", "items": {"type": "string"}}, "constraints": {"type": "array", "items": {"type": "string"}}, "implementationState": {"type": "array", "items": {"type": "string"}}, "completedWork": {"type": "array", "items": {"type": "string"}}, "remainingWork": {"type": "array", "items": {"type": "string"}}, "knownIssues": {"type": "array", "items": {"type": "string"}}, "validation": {"type": "array", "items": {"type": "string"}}, "openQuestions": {"type": "array", "items": {"type": "string"}}, "pinnedItems": {"type": "array", "items": {"type": "string"}}, "excludedHistory": {"type": "array", "items": {"type": "string"}}, "modelBundle": {"type": "object", "description": "Optional Codex semantic curation with taskObjective, items, suggestedStartingInstruction, and excludedHistory."}}),
     tool("session_status", "Return local Code Buddy log and report paths for the current workspace.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION}, True),
     tool("analyze_human_retries", "Return the local human-retry evidence model, reliability status, and always-present personalized feedback. Associations are observational, never causal.", ["workspace"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}}, True),
+    tool("create_project_config", "Create code-buddy.yaml with the documented default project policy. This tool is opt-in and never overwrites an existing personalized configuration.", ["workspace"], {"workspace": WORKSPACE}),
     tool("record_intervention", "Record the developer's explicit choice or a controlled fallback in the local intervention log.", ["workspace", "eventType", "data"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "eventType": {"type": "string"}, "data": {"type": "object"}}),
 ]
 
@@ -727,6 +735,7 @@ HANDLERS = {
     "curate_context": curate_context,
     "session_status": session_status,
     "analyze_human_retries": analyze_human_retries,
+    "create_project_config": create_project_config,
     "record_intervention": record_intervention,
 }
 

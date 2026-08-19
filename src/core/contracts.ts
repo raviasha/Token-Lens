@@ -266,6 +266,7 @@ export interface CodeBuddyPolicy {
     estimatedContextCapacityTokens: number;
     warningThreshold: number;
     criticalThreshold: number;
+    pauseThreshold: number;
     allowVisionVerification: boolean;
     offerCurationOnNewSession: boolean;
     offerCurationOnNewTask: boolean;

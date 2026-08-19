@@ -8,6 +8,7 @@ import { registerCodeBuddyTools } from './ai/tools';
 import { VscodeStructuredReasoner } from './ai/vscodeReasoner';
 import { getCodeBuddyPolicy } from './config';
 import { JsonlInterventionStore } from './core/eventStore';
+import { createProjectPolicyFile } from './core/projectPolicy';
 import {
   getCurrentAgentInstructionsPath,
   getCurrentAnalyticsPath,
@@ -126,6 +127,22 @@ export function activate(context: vscode.ExtensionContext): void {
   }).register(context);
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('tokenLens.createProjectConfig', async () => {
+      try {
+        const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspace) throw new Error('Open a workspace folder first.');
+        const result = createProjectPolicyFile(workspace);
+        await vscode.window.showTextDocument(vscode.Uri.file(result.filePath), { preview: false });
+        await vscode.window.showInformationMessage(
+          result.created
+            ? 'Created code-buddy.yaml with the default project settings.'
+            : 'Opened the existing code-buddy.yaml without changing it.'
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not create the project configuration: ${message}`);
+      }
+    }),
     vscode.commands.registerCommand('tokenLens.installHooks', async () => {
       try {
         const result = await installHooks(context);
@@ -136,9 +153,13 @@ export function activate(context: vscode.ExtensionContext): void {
         output.appendLine(`Writing structured interventions to ${result.interventionLogPath}`);
         output.appendLine(`Writing versioned task telemetry to ${result.telemetryPath}`);
         output.appendLine(`Installed Code Buddy agent instructions at ${result.instructionsPath}`);
-        await vscode.window.showInformationMessage(
-          result.created ? 'Code Buddy Copilot hooks installed.' : 'Code Buddy Copilot hooks updated.'
+        const choice = await vscode.window.showInformationMessage(
+          `${result.created ? 'Code Buddy Copilot hooks installed.' : 'Code Buddy Copilot hooks updated.'} Built-in defaults are active unless this project has code-buddy.yaml.`,
+          'Create or Open Project Configuration'
         );
+        if (choice === 'Create or Open Project Configuration') {
+          await vscode.commands.executeCommand('tokenLens.createProjectConfig');
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         output.appendLine(`Install failed: ${message}`);

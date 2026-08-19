@@ -32,7 +32,7 @@
             "command": "node \"${PLUGIN_ROOT}/hooks/code_buddy_hook.cjs\"",
             "timeout": 15,
             "statusMessage": "Preparing Code Buddy preflight",
-            "additionalContextLimit": 800
+            "additionalContextLimit": 2400
           }
         ]
       }
@@ -46,7 +46,7 @@
             "command": "node \"${PLUGIN_ROOT}/hooks/code_buddy_hook.cjs\"",
             "timeout": 10,
             "statusMessage": "Checking Code Buddy preflight",
-            "additionalContextLimit": 800
+            "additionalContextLimit": 1600
           }
         ]
       }

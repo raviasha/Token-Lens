@@ -8,7 +8,7 @@ const DEFAULT_POLICY = Object.freeze({
   thresholds: {
     promptQuality: { enhanceBelow: 75 },
     taskScope: { decomposeAtOrAbove: 65 },
-    estimatedContextPressure: { capacityTokens: 40000, warningAt: 0.70, criticalAt: 0.85 },
+    estimatedContextPressure: { capacityTokens: 40000, warningAt: 0.55, criticalAt: 0.65, pauseAt: 0.70 },
     sessionFit: { recommendFreshTaskAtOrAbove: 75, fallbackLexicalOverlapBelow: 0.20 }
   },
   measurement: {
@@ -41,7 +41,7 @@ function parse(contents, diagnostics) {
   const root = {};
   const stack = [{ indent: -2, value: root, path: '' }];
   for (const [index, source] of contents.split(/\r?\n/).entries()) {
-    const withoutComment = source.replace(/\s+#.*$/, '').replace(/\s+$/, '');
+    const withoutComment = source.replace(/(?:^|\s)#.*$/, '').replace(/\s+$/, '');
     if (!withoutComment.trim()) continue;
     if (/\t/.test(source)) {
       add(diagnostics, 'unsupported_syntax', `line.${index + 1}`, 'Tabs are not supported in code-buddy.yaml.');
@@ -146,11 +146,20 @@ function loadProjectPolicy(workspace) {
   if (scope) policy.thresholds.taskScope.decomposeAtOrAbove = number(scope.decomposeAtOrAbove, policy.thresholds.taskScope.decomposeAtOrAbove, 'thresholds.taskScope.decomposeAtOrAbove', diagnostics, 0, 100);
   const context = mapping(thresholds.estimatedContextPressure);
   if (context) {
+    unknown(context, ['capacityTokens', 'warningAt', 'criticalAt', 'pauseAt'], 'thresholds.estimatedContextPressure', diagnostics);
     policy.thresholds.estimatedContextPressure.capacityTokens = number(context.capacityTokens, policy.thresholds.estimatedContextPressure.capacityTokens, 'thresholds.estimatedContextPressure.capacityTokens', diagnostics, 1000, Number.MAX_SAFE_INTEGER, true);
     policy.thresholds.estimatedContextPressure.warningAt = number(context.warningAt, policy.thresholds.estimatedContextPressure.warningAt, 'thresholds.estimatedContextPressure.warningAt', diagnostics, 0, 1);
     const critical = number(context.criticalAt, policy.thresholds.estimatedContextPressure.criticalAt, 'thresholds.estimatedContextPressure.criticalAt', diagnostics, 0, 1);
     if (critical < policy.thresholds.estimatedContextPressure.warningAt) add(diagnostics, 'invalid_value', 'thresholds.estimatedContextPressure.criticalAt', 'criticalAt must be greater than or equal to warningAt.');
     else policy.thresholds.estimatedContextPressure.criticalAt = critical;
+    const pause = number(context.pauseAt, policy.thresholds.estimatedContextPressure.pauseAt, 'thresholds.estimatedContextPressure.pauseAt', diagnostics, 0, 1);
+    if (context.pauseAt !== undefined && pause < policy.thresholds.estimatedContextPressure.criticalAt) {
+      add(diagnostics, 'invalid_value', 'thresholds.estimatedContextPressure.pauseAt', 'pauseAt must be greater than or equal to criticalAt.');
+    } else if (context.pauseAt !== undefined) {
+      policy.thresholds.estimatedContextPressure.pauseAt = pause;
+    } else if (policy.thresholds.estimatedContextPressure.pauseAt < policy.thresholds.estimatedContextPressure.criticalAt) {
+      policy.thresholds.estimatedContextPressure.pauseAt = policy.thresholds.estimatedContextPressure.criticalAt;
+    }
   }
   const fit = mapping(thresholds.sessionFit);
   if (fit) {

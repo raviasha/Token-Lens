@@ -17,14 +17,17 @@ test('all installation guides document the shared Code Buddy health policy', () 
     assert.match(contents, /enhanceBelow: 75/);
     assert.match(contents, /decomposeAtOrAbove: 65/);
     assert.match(contents, /capacityTokens: 40000/);
-    assert.match(contents, /warningAt: 0\.70/);
-    assert.match(contents, /criticalAt: 0\.85/);
+    assert.match(contents, /warningAt: 0\.55/);
+    assert.match(contents, /criticalAt: 0\.65/);
+    assert.match(contents, /pauseAt: 0\.70/);
     assert.match(contents, /recommendFreshTaskAtOrAbove: 75/);
     assert.match(contents, /estimated context pressure/i);
     assert.match(contents, /token_count/);
     assert.match(contents, /model context window/i);
     assert.match(contents, /actual percentage/i);
     assert.match(contents, /continue unchanged/i);
+    assert.match(contents, /create_project_config|Create or Open Project Configuration/);
+    assert.match(contents, /never overwrite|without changing|left unchanged/i);
   }
 });
 

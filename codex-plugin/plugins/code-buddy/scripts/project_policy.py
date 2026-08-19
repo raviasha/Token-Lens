@@ -10,12 +10,40 @@ import sys
 from pathlib import Path
 from typing import Any
 
+DEFAULT_PROJECT_POLICY_YAML = """# Code Buddy per-project policy.
+# Commit this file to share settings, or keep it untracked for personal settings.
+version: 1
+healthCheck:
+  showOnEveryMeaningfulCodingTask: true
+thresholds:
+  promptQuality:
+    enhanceBelow: 75
+  taskScope:
+    decomposeAtOrAbove: 65
+  estimatedContextPressure:
+    # Used only when native model-window capacity is unavailable.
+    capacityTokens: 40000
+    warningAt: 0.55
+    criticalAt: 0.65
+    pauseAt: 0.70
+  sessionFit:
+    recommendFreshTaskAtOrAbove: 75
+    fallbackLexicalOverlapBelow: 0.20
+measurement:
+  humanRetries:
+    minimumComparableTasks: 8
+    minimumTasksPerFactor: 5
+    reliabilityThreshold: 0.60
+    minimumEffectSize: 0.15
+    overdispersionThreshold: 1.50
+"""
+
 DEFAULT_POLICY = {
     "healthCheck": {"showOnEveryMeaningfulCodingTask": True},
     "thresholds": {
         "promptQuality": {"enhanceBelow": 75},
         "taskScope": {"decomposeAtOrAbove": 65},
-        "estimatedContextPressure": {"capacityTokens": 40000, "warningAt": 0.70, "criticalAt": 0.85},
+        "estimatedContextPressure": {"capacityTokens": 40000, "warningAt": 0.55, "criticalAt": 0.65, "pauseAt": 0.70},
         "sessionFit": {"recommendFreshTaskAtOrAbove": 75, "fallbackLexicalOverlapBelow": 0.20},
     },
     "measurement": {
@@ -48,7 +76,7 @@ def parse(contents: str, diagnostics: list[dict[str, str]]) -> dict[str, Any]:
     root: dict[str, Any] = {}
     stack: list[tuple[int, dict[str, Any], str]] = [(-2, root, "")]
     for index, source in enumerate(contents.splitlines(), 1):
-        line = re.sub(r"\s+#.*$", "", source).rstrip()
+        line = re.sub(r"(?:^|\s)#.*$", "", source).rstrip()
         if not line.strip():
             continue
         if "\t" in source:
@@ -81,6 +109,24 @@ def parse(contents: str, diagnostics: list[dict[str, str]]) -> dict[str, Any]:
             continue
         parent[key] = value
     return root
+
+
+def create_project_policy(workspace: str | Path) -> dict[str, Any]:
+    root = Path(workspace).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"Code Buddy workspace does not exist: {root}")
+    file_path = root / "code-buddy.yaml"
+    try:
+        with file_path.open("x", encoding="utf-8") as handle:
+            handle.write(DEFAULT_PROJECT_POLICY_YAML)
+        return {"status": "created", "created": True, "filePath": str(file_path)}
+    except FileExistsError:
+        return {
+            "status": "exists",
+            "created": False,
+            "filePath": str(file_path),
+            "message": "The existing code-buddy.yaml was left unchanged.",
+        }
 
 
 def mapping(value: Any) -> dict[str, Any] | None:
@@ -151,6 +197,7 @@ def load_project_policy(workspace: str | Path | None) -> dict[str, Any]:
         policy["thresholds"]["taskScope"]["decomposeAtOrAbove"] = number(scope.get("decomposeAtOrAbove"), policy["thresholds"]["taskScope"]["decomposeAtOrAbove"], "thresholds.taskScope.decomposeAtOrAbove", diagnostics, 0, 100)
     context = mapping(thresholds.get("estimatedContextPressure"))
     if context:
+        unknown(context, ["capacityTokens", "warningAt", "criticalAt", "pauseAt"], "thresholds.estimatedContextPressure", diagnostics)
         selected = policy["thresholds"]["estimatedContextPressure"]
         selected["capacityTokens"] = number(context.get("capacityTokens"), selected["capacityTokens"], "thresholds.estimatedContextPressure.capacityTokens", diagnostics, 1000, 9007199254740991, True)
         selected["warningAt"] = number(context.get("warningAt"), selected["warningAt"], "thresholds.estimatedContextPressure.warningAt", diagnostics, 0, 1)
@@ -159,6 +206,13 @@ def load_project_policy(workspace: str | Path | None) -> dict[str, Any]:
             add(diagnostics, "invalid_value", "thresholds.estimatedContextPressure.criticalAt", "criticalAt must be greater than or equal to warningAt.")
         else:
             selected["criticalAt"] = critical
+        pause = number(context.get("pauseAt"), selected["pauseAt"], "thresholds.estimatedContextPressure.pauseAt", diagnostics, 0, 1)
+        if context.get("pauseAt") is not None and pause < selected["criticalAt"]:
+            add(diagnostics, "invalid_value", "thresholds.estimatedContextPressure.pauseAt", "pauseAt must be greater than or equal to criticalAt.")
+        elif context.get("pauseAt") is not None:
+            selected["pauseAt"] = pause
+        elif selected["pauseAt"] < selected["criticalAt"]:
+            selected["pauseAt"] = selected["criticalAt"]
     fit = mapping(thresholds.get("sessionFit"))
     if fit:
         selected = policy["thresholds"]["sessionFit"]

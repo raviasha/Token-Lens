@@ -13,6 +13,10 @@ export function getCodeBuddyPolicy(scope?: vscode.ConfigurationScope): CodeBuddy
     configuration.get<number>('context.warningThreshold', DEFAULT_POLICY.context.warningThreshold),
     DEFAULT_POLICY.context.warningThreshold
   ), 0, 1);
+  const criticalThreshold = clamp(Math.max(warningThreshold, finite(
+    configuration.get<number>('context.criticalThreshold', DEFAULT_POLICY.context.criticalThreshold),
+    DEFAULT_POLICY.context.criticalThreshold
+  )), 0, 1);
   const legacyPolicy: CodeBuddyPolicy = {
     healthCheck: { ...DEFAULT_POLICY.healthCheck },
     promptReview: {
@@ -38,9 +42,10 @@ export function getCodeBuddyPolicy(scope?: vscode.ConfigurationScope): CodeBuddy
         DEFAULT_POLICY.context.estimatedContextCapacityTokens
       ))),
       warningThreshold,
-      criticalThreshold: clamp(Math.max(warningThreshold, finite(
-        configuration.get<number>('context.criticalThreshold', DEFAULT_POLICY.context.criticalThreshold),
-        DEFAULT_POLICY.context.criticalThreshold
+      criticalThreshold,
+      pauseThreshold: clamp(Math.max(criticalThreshold, finite(
+        configuration.get<number>('context.pauseThreshold', DEFAULT_POLICY.context.pauseThreshold),
+        DEFAULT_POLICY.context.pauseThreshold
       )), 0, 1),
       allowVisionVerification: configuration.get<boolean>('context.allowVisionVerification', DEFAULT_POLICY.context.allowVisionVerification),
       offerCurationOnNewSession: configuration.get<boolean>('context.offerCurationOnNewSession', DEFAULT_POLICY.context.offerCurationOnNewSession),

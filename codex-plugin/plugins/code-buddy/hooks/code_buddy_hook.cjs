@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const childProcess = require('node:child_process');
 const path = require('node:path');
 const { loadProjectPolicy } = require('../scripts/project_policy.cjs');
-const { captureHookEvent, getPersonalizedRecommendation } = require('../scripts/telemetry.cjs');
+const { captureHookEvent, getPersonalizedRecommendation, readCodexNativeContext } = require('../scripts/telemetry.cjs');
 
 const sensitiveKeyPattern = /(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential|private[_-]?key)/i;
 const secretPatterns = [
@@ -19,6 +19,7 @@ const secretPatterns = [
 const contextEstimateCharactersPerToken = 4;
 const preflightStateSchemaVersion = 1;
 const pendingHandoffSchemaVersion = 1;
+const preCompactionStateSchemaVersion = 1;
 const promptReviewerToolNames = new Set([
   'code-buddy_reviewprompt',
   'codebuddypromptreviewer',
@@ -114,7 +115,7 @@ function captureTelemetry(payload, options) {
       thresholds = {
         prompt_quality: policy.thresholds.promptQuality.enhanceBelow,
         task_decomposition: policy.thresholds.taskScope.decomposeAtOrAbove,
-        context_pressure: policy.thresholds.estimatedContextPressure.warningAt,
+        context_pressure: policy.thresholds.estimatedContextPressure.criticalAt,
         session_fit: policy.thresholds.sessionFit.recommendFreshTaskAtOrAbove
       };
     } catch {
@@ -481,6 +482,88 @@ function readJsonIfPresent(filePath) {
   } catch {
     return null;
   }
+}
+
+function preCompactionStatePath(logPath, sessionId) {
+  const stateDirectory = process.env.TOKEN_LENS_STATE_DIR || path.join(path.dirname(logPath), '.state');
+  return path.join(stateDirectory, 'pre-compaction', `${safeStatePart(sessionId)}.json`);
+}
+
+function loadPreCompactionState(logPath, sessionId) {
+  const state = readJsonIfPresent(preCompactionStatePath(logPath, sessionId));
+  return state && state.schemaVersion === preCompactionStateSchemaVersion && state.sessionId === sessionId
+    ? state
+    : null;
+}
+
+function savePreCompactionState(logPath, state) {
+  state.updatedAt = new Date().toISOString();
+  writeJsonAtomic(preCompactionStatePath(logPath, state.sessionId), state);
+}
+
+function clearPreCompactionState(logPath, sessionId) {
+  try {
+    fs.unlinkSync(preCompactionStatePath(logPath, sessionId));
+  } catch (error) {
+    if (!error || error.code !== 'ENOENT') throw error;
+  }
+}
+
+function contextThresholds(payload) {
+  const configured = loadProjectPolicy(getWorkspace(payload)).policy.thresholds.estimatedContextPressure;
+  const warningAt = Number(configured.warningAt);
+  const criticalAt = Math.max(warningAt, Number(configured.criticalAt));
+  const pauseAt = Math.max(criticalAt, Number(configured.pauseAt));
+  return { warningAt, criticalAt, pauseAt };
+}
+
+function liveNativeContext(payload) {
+  try {
+    const sessionId = getSessionId(payload);
+    if (!sessionId || sessionId === 'unknown') return null;
+    const measurement = readCodexNativeContext({
+      workspace: getWorkspace(payload),
+      sessionId
+    });
+    return measurement?.status === 'actual'
+      && typeof measurement.context_utilization === 'number'
+      && typeof measurement.model_context_window_tokens === 'number'
+      ? measurement
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function preCompactionMeasurementData(measurement, thresholds) {
+  return {
+    value: measurement?.input_tokens ?? null,
+    capacityTokens: measurement?.model_context_window_tokens ?? null,
+    utilization: measurement?.context_utilization ?? null,
+    measurementTimestamp: measurement?.measurement_timestamp ?? null,
+    measurementMethod: measurement?.measurement_method ?? 'unavailable',
+    confidence: measurement?.measurement_confidence ?? 'low',
+    warningAt: thresholds.warningAt,
+    criticalAt: thresholds.criticalAt,
+    pauseAt: thresholds.pauseAt
+  };
+}
+
+function ensurePreCompactionState(logPath, payload, measurement, thresholds, trigger) {
+  const sessionId = getSessionId(payload) || 'unknown';
+  const existing = loadPreCompactionState(logPath, sessionId);
+  if (existing) return existing;
+  const state = {
+    schemaVersion: preCompactionStateSchemaVersion,
+    sessionId,
+    status: 'waiting',
+    resolution: null,
+    trigger,
+    triggeredAt: getTimestamp(payload),
+    ...preCompactionMeasurementData(measurement, thresholds)
+  };
+  savePreCompactionState(logPath, state);
+  return state;
 }
 
 function pendingHandoffPath(logPath) {
@@ -1013,6 +1096,145 @@ function appendGovernanceIntervention(logPath, payload, eventType, data) {
   });
 }
 
+function appendPreCompactionRecord(logPath, payload, eventType, data) {
+  const timestamp = getTimestamp(payload);
+  const sessionId = getSessionId(payload) || 'unknown';
+  const recordData = redact(data);
+  appendRecord(logPath, {
+    schemaVersion: 2,
+    eventId: createEventId('pre_compaction', { eventType, sessionId, timestamp, data: recordData }),
+    recordType: eventType,
+    source: 'governance',
+    sourceEventType: getEventName(payload),
+    sessionId,
+    turnId: getTurnId(payload),
+    parentId: null,
+    timestamp,
+    localTimestamp: getLocalTimestamp(timestamp),
+    recordedAt: getLocalTimestamp(),
+    workspace: getWorkspace(payload),
+    model: getValue(payload, 'model') || null,
+    data: recordData
+  });
+  appendGovernanceIntervention(logPath, payload, eventType, recordData);
+}
+
+function contextChoiceFromTool(payload) {
+  const toolName = normalizeToolName(getValue(payload, 'tool_name', 'toolName'));
+  const input = getValue(payload, 'tool_input', 'toolArgs') || {};
+  if (/(?:^|__)code_buddy__(?:curate_context|curatecontext)$/.test(toolName)
+    || /^(?:code-buddy_curatecontext|codebuddycontextcurator)$/.test(toolName)) {
+    return input.mode === 'fresh_task' ? 'curate_fresh' : input.mode === 'continue_current' ? 'curate_current' : null;
+  }
+  if (/(?:^|__)code_buddy__(?:record_intervention|recordintervention)$/.test(toolName)
+    || /^(?:code-buddy_recordintervention|codebuddyrecordintervention)$/.test(toolName)) {
+    return input.eventType === 'context.pre_compaction_choice'
+      && input.data?.choice === 'continue_unchanged'
+      ? 'continue_unchanged'
+      : null;
+  }
+  return null;
+}
+
+function preCompactionPauseMessage(toolName, measurement) {
+  const percent = (measurement.context_utilization * 100).toFixed(1);
+  const value = Number(measurement.input_tokens).toLocaleString('en-US');
+  const capacity = Number(measurement.model_context_window_tokens).toLocaleString('en-US');
+  return `Code Buddy paused ${toolName || 'this implementation tool'} at ${value} / ${capacity} tokens (${percent}% actual), before Codex automatic compaction. `
+    + 'Do not retry implementation yet. In the normal user-visible response, offer all three choices: '
+    + '(1) Curate for a fresh task, (2) Curate the current task, or (3) Continue unchanged. '
+    + 'Only after the developer chooses: call curate_context for either curation choice, or call record_intervention with '
+    + 'eventType `context.pre_compaction_choice` and data `{ "choice": "continue_unchanged" }` for continuing. '
+    + 'Never curate, discard context, or create a task automatically.';
+}
+
+function handlePreCompactionGuard(logPath, payload, eventName) {
+  const sessionId = getSessionId(payload) || 'unknown';
+  const state = loadPreCompactionState(logPath, sessionId);
+
+  if (eventName === 'PostCompact' || eventName === 'postCompact') {
+    if (state) {
+      appendPreCompactionRecord(logPath, payload, 'context.pre_compaction_cycle_completed', {
+        status: state.status,
+        resolution: state.resolution,
+        triggeredAt: state.triggeredAt
+      });
+      clearPreCompactionState(logPath, sessionId);
+    }
+    return null;
+  }
+
+  if (eventName === 'PreCompact' || eventName === 'preCompact') {
+    const thresholds = contextThresholds(payload);
+    const measurement = liveNativeContext(payload);
+    const resolved = state?.status === 'resolved';
+    appendPreCompactionRecord(
+      logPath,
+      payload,
+      resolved ? 'context.pre_compaction_outcome' : 'context.pre_compaction_missed',
+      {
+        missed: !resolved,
+        reason: resolved
+          ? 'developer_choice_recorded_before_compaction'
+          : state?.status === 'waiting'
+            ? 'compaction_occurred_before_developer_choice'
+            : 'no_pre_compaction_pause_observed',
+        resolution: state?.resolution ?? null,
+        ...(preCompactionMeasurementData(measurement, thresholds))
+      }
+    );
+    return null;
+  }
+
+  if (eventName === 'PostToolUse' || eventName === 'postToolUse') {
+    const choice = state?.status === 'waiting' ? contextChoiceFromTool(payload) : null;
+    if (choice) {
+      state.status = 'resolved';
+      state.resolution = choice;
+      state.resolvedAt = getTimestamp(payload);
+      savePreCompactionState(logPath, state);
+      appendPreCompactionRecord(logPath, payload, 'context.pre_compaction_choice', {
+        choice,
+        trigger: state.trigger,
+        utilization: state.utilization
+      });
+    }
+    return null;
+  }
+
+  if (eventName !== 'PreToolUse' && eventName !== 'preToolUse') return null;
+  const toolName = getValue(payload, 'tool_name', 'toolName');
+  const normalizedToolName = normalizeToolName(toolName);
+  if (isCodeBuddyTool(normalizedToolName) || isObservationalTool(normalizedToolName)) return null;
+
+  const thresholds = contextThresholds(payload);
+  const measurement = liveNativeContext(payload);
+  if (!measurement || measurement.context_utilization < thresholds.pauseAt) {
+    if (state && measurement && measurement.context_utilization < thresholds.warningAt) {
+      clearPreCompactionState(logPath, sessionId);
+    }
+    return null;
+  }
+  if (state?.status === 'resolved') return null;
+
+  const active = ensurePreCompactionState(logPath, payload, measurement, thresholds, 'pre_tool_use');
+  const message = preCompactionPauseMessage(toolName, measurement);
+  appendPreCompactionRecord(logPath, payload, 'context.pre_compaction_paused', {
+    toolName,
+    toolUseId: getValue(payload, 'tool_use_id', 'toolUseId') || null,
+    trigger: active.trigger,
+    ...preCompactionMeasurementData(measurement, thresholds)
+  });
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: message,
+      additionalContext: message
+    }
+  };
+}
+
 function governanceContext(logPath, payload, eventName, eventId) {
   if (eventName !== 'UserPromptSubmit' && eventName !== 'userPromptSubmitted') {
     return null;
@@ -1050,21 +1272,43 @@ function governanceContext(logPath, payload, eventName, eventId) {
     }
   }
 
+  const thresholds = contextThresholds(payload);
+  const native = liveNativeContext(payload);
   const snapshot = [...records].reverse().find((record) => record.recordType === 'context.load_snapshot' && record.sessionId === sessionId);
-  const actual = snapshot?.data?.actualContextUtilization;
-  const pressure = actual || snapshot?.data?.estimatedContextPressure;
+  const snapshotActual = snapshot?.data?.actualContextUtilization;
+  const fallback = snapshot?.data?.estimatedContextPressure;
+  const actual = native
+    ? {
+      value: native.input_tokens,
+      unit: 'tokens',
+      utilization: native.context_utilization,
+      capacityTokens: native.model_context_window_tokens,
+      thresholdState: native.context_utilization >= thresholds.criticalAt
+        ? 'critical'
+        : native.context_utilization >= thresholds.warningAt ? 'warning' : 'normal'
+    }
+    : snapshotActual;
+  const pressure = actual || fallback;
   if (pressure && ['warning', 'critical'].includes(pressure.thresholdState)) {
     appendGovernanceIntervention(logPath, payload, 'context.warning', {
       thresholdState: pressure.thresholdState,
       value: pressure.value,
       unit: pressure.unit,
-      utilization: pressure.utilization
+      utilization: pressure.utilization,
+      source: native ? 'live_native_token_count' : actual ? 'prior_native_snapshot' : 'estimated_snapshot'
     });
     const label = actual ? 'Actual Context Utilization' : 'Estimated Context Pressure';
     const qualification = actual
       ? 'Use the native input-token/model-window ratio and do not substitute cumulative usage.'
       : 'Never claim this fallback estimate is actual context utilization.';
-    messages.push(`Code Buddy's prior local snapshot reports ${pressure.thresholdState} ${label}. Call measure_context before discussing it, then offer fresh-task curation, current-task curation, or continuing unchanged. ${qualification}`);
+    if (native && native.context_utilization >= thresholds.pauseAt) {
+      ensurePreCompactionState(logPath, payload, native, thresholds, 'user_prompt');
+      messages.push(`Code Buddy's live native measurement has reached the ${(thresholds.pauseAt * 100).toFixed(0)}% pre-compaction pause. Call measure_context, then before implementation show all three choices in the normal user-visible response: (1) Curate for a fresh task, (2) Curate the current task, or (3) Continue unchanged. Record the explicit choice; never curate automatically. ${qualification}`);
+    } else if (pressure.thresholdState === 'critical') {
+      messages.push(`Code Buddy reports critical ${label}. Call measure_context before discussing it, then offer fresh-task curation, current-task curation, or continuing unchanged. ${qualification}`);
+    } else {
+      messages.push(`Code Buddy reports warning ${label}. Call measure_context before discussing it and show the early warning; curation choices begin at ${(thresholds.criticalAt * 100).toFixed(0)}%. ${qualification}`);
+    }
   }
 
   if (!messages.length) {
@@ -1545,15 +1789,16 @@ function main(input) {
     captureTelemetry(payload, { platform: 'codex', editor: 'codex', legacyLogPath: logPath });
   }
   const handoff = handlePendingHandoffEvent(logPath, payload, event);
-  const hookOutput = mergeHookOutput(
-    handoff.waiting
-      ? handoff.output
-      : mergeHookOutput(
-        handlePreflightEvent(logPath, payload, event, eventId),
-        handoff.resolved ? null : governanceContext(logPath, payload, event, eventId)
-      ),
-    personalizedFeedbackOutput(payload, event)
-  );
+  let runtimeOutput;
+  if (handoff.waiting) {
+    runtimeOutput = handoff.output;
+  } else {
+    const preflightOutput = handlePreflightEvent(logPath, payload, event, eventId);
+    const governanceOutput = handoff.resolved ? null : governanceContext(logPath, payload, event, eventId);
+    const preCompactionOutput = preflightOutput ? null : handlePreCompactionGuard(logPath, payload, event);
+    runtimeOutput = mergeHookOutput(mergeHookOutput(preflightOutput, governanceOutput), preCompactionOutput);
+  }
+  const hookOutput = mergeHookOutput(runtimeOutput, personalizedFeedbackOutput(payload, event));
 
   if (event === 'UserPromptSubmit' || event === 'userPromptSubmitted') {
     runCodeBuddy('start_turn', payload, sessionId, eventId);

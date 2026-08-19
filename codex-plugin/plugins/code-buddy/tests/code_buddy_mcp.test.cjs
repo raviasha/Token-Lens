@@ -139,9 +139,25 @@ test('context measurement automatically uses native Codex input tokens and model
   assert.equal(result.measurement.capacity, 200_000);
   assert.equal(result.measurement.utilization, 0.75);
   assert.equal(result.measurement.cachedInputTokens, 120_000);
-  assert.equal(result.measurement.thresholdState, 'warning');
+  assert.equal(result.measurement.thresholdState, 'critical');
   assert.equal(result.measurement.terminology, 'Actual Context Utilization');
-  assert.equal(result.healthLineStatus, 'warning — 150,000 / 200,000 tokens (75.0% actual)');
+  assert.equal(result.healthLineStatus, 'critical — 150,000 / 200,000 tokens (75.0% actual)');
+  assert.equal(result.recommendation, 'curate_or_start_fresh');
+});
+
+test('context measurement warns at 55 percent without recommending curation before 65 percent', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-mcp-warning-'));
+  const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-codex-sessions-'));
+  writeRollout(sessionsRoot, workspace, 'warning-session', {
+    input_tokens: 120_000,
+    total_tokens: 120_000
+  }, 200_000);
+
+  const result = call('measure_context', { workspace, sessionId: 'warning-session' }, {
+    CODE_BUDDY_CODEX_SESSIONS_DIR: sessionsRoot
+  });
+  assert.equal(result.measurement.thresholdState, 'warning');
+  assert.equal(result.recommendation, 'continue');
 });
 
 test('context measurement keeps actual tokens but omits percent when Codex omits capacity', () => {
@@ -169,4 +185,25 @@ test('Node and Python policy parsers produce the same normalized policy', () => 
     assert.equal(pythonResult.status, 0, pythonResult.stderr);
     assert.deepEqual(JSON.parse(nodeResult.stdout), JSON.parse(pythonResult.stdout));
   }
+});
+
+test('create_project_config writes defaults once and preserves an existing personalized file', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-project-config-'));
+  const first = call('create_project_config', { workspace });
+  assert.equal(first.status, 'created');
+  assert.equal(first.created, true);
+  assert.match(fs.readFileSync(first.filePath, 'utf8'), /warningAt: 0\.55/);
+  assert.match(fs.readFileSync(first.filePath, 'utf8'), /^# Code Buddy per-project policy\./);
+  const nodeResult = spawnSync(process.execPath, [nodePolicyPath, workspace], { encoding: 'utf8' });
+  const pythonResult = spawnSync('python3', [pythonPolicyPath, workspace], { encoding: 'utf8' });
+  assert.equal(nodeResult.status, 0, nodeResult.stderr);
+  assert.equal(pythonResult.status, 0, pythonResult.stderr);
+  assert.deepEqual(JSON.parse(nodeResult.stdout), JSON.parse(pythonResult.stdout));
+  assert.deepEqual(JSON.parse(nodeResult.stdout).diagnostics, []);
+
+  fs.writeFileSync(first.filePath, 'version: 1\nthresholds:\n  promptQuality:\n    enhanceBelow: 90\n', 'utf8');
+  const second = call('create_project_config', { workspace });
+  assert.equal(second.status, 'exists');
+  assert.equal(second.created, false);
+  assert.match(fs.readFileSync(second.filePath, 'utf8'), /enhanceBelow: 90/);
 });

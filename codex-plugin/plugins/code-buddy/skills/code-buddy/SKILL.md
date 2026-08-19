@@ -89,6 +89,12 @@ An optional trackable root `code-buddy.yaml` applies to this plugin and the VS
 Code extension. It supports only documented two-space mappings, booleans,
 numbers, and comments; invalid fields fall back individually.
 
+When the developer asks to create or personalize project settings, call
+`create_project_config` with the absolute workspace path. It creates the full
+default file only when `code-buddy.yaml` is absent and never overwrites an
+existing personalized file. The built-in defaults remain active when the file
+is absent.
+
 ```yaml
 version: 1
 healthCheck:
@@ -100,8 +106,9 @@ thresholds:
     decomposeAtOrAbove: 65
   estimatedContextPressure:
     capacityTokens: 40000
-    warningAt: 0.70
-    criticalAt: 0.85
+    warningAt: 0.55
+    criticalAt: 0.65
+    pauseAt: 0.70
   sessionFit:
     recommendFreshTaskAtOrAbove: 75
     fallbackLexicalOverlapBelow: 0.20
@@ -140,6 +147,17 @@ When Code Buddy reports warning or critical context pressure, call
 - Values from Code Buddy's observable-text fallback are **Estimated Context
   Pressure**. They are not billing data or an exact context-window
   measurement.
+- At `warningAt`, show the early warning without forcing curation. At
+  `criticalAt`, visibly offer **Curate for a fresh task**, **Curate the current
+  task**, and **Continue unchanged**. At `pauseAt`, the Codex hook pauses new
+  implementation tools when a live native measurement is available; read and
+  search tools remain available so the developer can make an informed choice.
+- After a pre-compaction pause, use `curate_context` only after the developer
+  chooses either curation option. If the developer chooses **Continue
+  unchanged**, call `record_intervention` with event type
+  `context.pre_compaction_choice` and data `{ "choice":
+  "continue_unchanged" }` before retrying implementation. Never make or record
+  that choice on the developer's behalf.
 - Offer a fresh-task handoff or current-task curation only after the developer
   chooses it. Prepare a minimum-sufficient semantic bundle in `modelBundle`
   before calling `curate_context`; preserve pinned items and state which
@@ -161,7 +179,7 @@ All generated data is local to the selected workspace:
 
 - `.code-buddy/codex-session.jsonl` — redacted lifecycle and transcript records
 - `.code-buddy/interventions.jsonl` — reviews, choices, measurements, and fallbacks
-- `.code-buddy/.state/` — preflight, transcript, and worktree-baseline state
+- `.code-buddy/.state/` — preflight, pre-compaction choice, transcript, and worktree-baseline state
 - `.code-buddy/telemetry/raw/` — versioned local task events for replay and human-retry evidence
 - `.code-buddy/telemetry/.state/` — task attribution, interaction, sequence, and deduplication state
 - `Code Buddy.md` — concise next-prompt feedback

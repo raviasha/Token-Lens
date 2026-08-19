@@ -62,8 +62,9 @@ thresholds:
     decomposeAtOrAbove: 65
   estimatedContextPressure:
     capacityTokens: 40000
-    warningAt: 0.70
-    criticalAt: 0.85
+    warningAt: 0.55
+    criticalAt: 0.65
+    pauseAt: 0.70
   sessionFit:
     recommendFreshTaskAtOrAbove: 75
     fallbackLexicalOverlapBelow: 0.20
@@ -76,10 +77,36 @@ measurement:
     overdispersionThreshold: 1.50
 ```
 
+These defaults are built in, so plugin installation does not create or alter a
+project file. Ask Code Buddy to create the project configuration and it will
+call `create_project_config`. The tool creates the complete default
+`code-buddy.yaml` only when absent and never overwrites an existing
+personalized file. VS Code provides the equivalent **Code Buddy: Create or
+Open Project Configuration** command.
+
+Edit the generated numeric values to personalize the policy. Use ratios from
+`0` to `1` for context/reliability, scores from `0` to `100` for prompt/task/
+session fit, and keep `warningAt <= criticalAt <= pauseAt`. Commit the file for
+shared team settings, or keep it untracked/use a personal Git exclude for
+developer-only settings. Codex reads changes on subsequent prompts; VS Code
+users should reload and reinstall workspace hooks after editing.
+
+The defaults are health line `true`; prompt/task thresholds `75`/`65`; fallback
+capacity `40000`; context warning/curation/pause `0.55`/`0.65`/`0.70`;
+session-fit/overlap `75`/`0.20`; and retry evidence gates `8`, `5`, `0.60`,
+`0.15`, and `1.50` in YAML order.
+
 Raise `enhanceBelow` for more prompt-enhancement advice; lower the other
 thresholds for stricter controls. Empty local context evidence is **checked —
 limited evidence**, not an actual-context claim. When session fit recommends a
 fresh task, the developer can choose a curated handoff or **Continue unchanged**; Code Buddy never creates a task automatically. Every prompt also receives a model-presented personalized-feedback line; it says that data is insufficient until the local evidence gate passes.
+
+Native Codex utilization warns at 55%, offers curation at 65%, and pauses new
+implementation tools at 70%. The pause leaves read/search and Code Buddy tools
+available and clears only after the developer chooses fresh-task curation,
+current-task curation, or continuing unchanged. Code Buddy cannot disable
+Codex's automatic compaction; it creates an earlier developer-controlled
+decision point and records a missed intervention if compaction wins the race.
 
 ## Local task telemetry
 

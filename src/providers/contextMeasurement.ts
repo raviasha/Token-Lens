@@ -140,10 +140,10 @@ export class ContextMeasurementService {
       measurement,
       healthLineStatus: formatContextHealthLineStatus(measurement),
       providerId: resolution.providerId,
-      recommendation: thresholdState === 'critical' ? 'curate_or_start_fresh' : thresholdState === 'warning' ? 'consider_curation' : 'none',
-      availableActions: thresholdState === 'normal' || thresholdState === 'unavailable'
-        ? ['continue_unchanged']
-        : ['start_fresh', 'curate_current', 'continue_unchanged']
+      recommendation: thresholdState === 'critical' ? 'curate_or_start_fresh' : 'none',
+      availableActions: thresholdState === 'critical'
+        ? ['start_fresh', 'curate_current', 'continue_unchanged']
+        : ['continue_unchanged']
     };
   }
 }

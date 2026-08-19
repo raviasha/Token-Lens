@@ -555,8 +555,8 @@ def prompt_effective_characters(records):
 
 def context_warning(exposure_tokens, previous_exposures):
     capacity = max(1_000, env_int("TOKEN_LENS_CONTEXT_CAPACITY_TOKENS", 40_000))
-    warning_threshold = min(1.0, max(0.0, env_float("TOKEN_LENS_CONTEXT_WARNING_THRESHOLD", 0.70)))
-    critical_threshold = min(1.0, max(warning_threshold, env_float("TOKEN_LENS_CONTEXT_CRITICAL_THRESHOLD", 0.85)))
+    warning_threshold = min(1.0, max(0.0, env_float("TOKEN_LENS_CONTEXT_WARNING_THRESHOLD", 0.55)))
+    critical_threshold = min(1.0, max(warning_threshold, env_float("TOKEN_LENS_CONTEXT_CRITICAL_THRESHOLD", 0.65)))
     utilization = exposure_tokens / capacity
     baseline = None
     ratio = None
@@ -805,8 +805,8 @@ def append_context_snapshot(log_path, session_id, workspace, prompt_event_id, ev
     native = read_native_codex_context(workspace, session_id)
     utilization = native.get("context_utilization") if native else None
     if isinstance(utilization, (int, float)):
-        warning_threshold = min(1.0, max(0.0, env_float("TOKEN_LENS_CONTEXT_WARNING_THRESHOLD", 0.70)))
-        critical_threshold = min(1.0, max(warning_threshold, env_float("TOKEN_LENS_CONTEXT_CRITICAL_THRESHOLD", 0.85)))
+        warning_threshold = min(1.0, max(0.0, env_float("TOKEN_LENS_CONTEXT_WARNING_THRESHOLD", 0.55)))
+        critical_threshold = min(1.0, max(warning_threshold, env_float("TOKEN_LENS_CONTEXT_CRITICAL_THRESHOLD", 0.65)))
         threshold_state = "critical" if utilization >= critical_threshold else "warning" if utilization >= warning_threshold else "normal"
     else:
         threshold_state = "unavailable" if native else context_turn["warning"]["thresholdState"]

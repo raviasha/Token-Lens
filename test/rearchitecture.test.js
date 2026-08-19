@@ -128,7 +128,15 @@ test('context measurement follows API then vision then estimate and labels estim
   assert.equal(result.measurement.terminology, 'Actual Context Utilization');
   assert.equal(result.measurement.utilization, 0.775);
   assert.equal(result.measurement.capacityTokens, 40_000);
-  assert.equal(result.healthLineStatus, 'warning — 31,000 / 40,000 tokens (77.5% actual)');
+  assert.equal(result.healthLineStatus, 'critical — 31,000 / 40,000 tokens (77.5% actual)');
+  assert.equal(result.recommendation, 'curate_or_start_fresh');
+
+  const earlyWarning = service.measure({
+    nativeMeasurement: { value: 24_000, unit: 'tokens', confidence: 'high', providerId: 'native-api', capacityTokens: 40_000 }
+  });
+  assert.equal(earlyWarning.measurement.thresholdState, 'warning');
+  assert.equal(earlyWarning.recommendation, 'none');
+  assert.deepEqual(earlyWarning.availableActions, ['continue_unchanged']);
 
   const actualWithoutCapacity = service.measure({
     nativeMeasurement: { value: 31_000, unit: 'tokens', confidence: 'high', providerId: 'native-api' }

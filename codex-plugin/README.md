@@ -75,8 +75,9 @@ thresholds:
     decomposeAtOrAbove: 65
   estimatedContextPressure:
     capacityTokens: 40000
-    warningAt: 0.70
-    criticalAt: 0.85
+    warningAt: 0.55
+    criticalAt: 0.65
+    pauseAt: 0.70
   sessionFit:
     recommendFreshTaskAtOrAbove: 75
     fallbackLexicalOverlapBelow: 0.20
@@ -89,11 +90,38 @@ measurement:
     overdispersionThreshold: 1.50
 ```
 
+The built-in defaults apply when this file is absent; plugin installation does
+not silently write project settings. To create the file from Codex, ask Code
+Buddy to create the project configuration. It invokes `create_project_config`,
+which writes the complete default policy only when the file is absent and
+never overwrites an existing personalized file. VS Code users can run **Code
+Buddy: Create or Open Project Configuration** for the same safe workflow.
+
+Personalize the numeric values in the generated file. Context and reliability
+values are ratios from `0` to `1`; prompt, task, and session-fit values are
+scores from `0` to `100`; and the context order must remain `warningAt <=
+criticalAt <= pauseAt`. Commit the file to share settings with a team, or leave
+it untracked/use a personal Git exclude for developer-only settings. Codex
+reads changes on subsequent prompts. VS Code users should reload the window and
+rerun **Code Buddy: Install Copilot Hooks** after editing.
+
+Defaults are: health line `true`; prompt enhancement `75`; task decomposition
+`65`; fallback capacity `40000`; context warning/curation/pause
+`0.55`/`0.65`/`0.70`; session-fit likelihood `75`; lexical overlap `0.20`; and
+human-retry evidence gates `8` comparable tasks, `5` tasks per factor, `0.60`
+reliability, `0.15` effect size, and `1.50` overdispersion.
+
 Raise `enhanceBelow` for stricter prompt enhancement; lower the other
 thresholds for earlier decomposition, pressure, or fresh-task advice. Context
 without a matching native event or sufficient fallback evidence is shown as
 **checked — limited evidence**.
 A session-fit recommendation offers a curated fresh task or **Continue unchanged**; it never acts automatically.
+
+For Codex context, 55% is an early warning, 65% offers curation, and 70% pauses
+new implementation tools when a live native token ratio is available. The
+pause keeps read/search and Code Buddy tools available, and resumes only after
+the developer chooses fresh-task curation, current-task curation, or continuing
+unchanged. Code Buddy does not disable or replace Codex's own compaction.
 
 Every submitted prompt also receives a model-presented `Personalized
 recommendation —` line based on local metadata. It explicitly reports cold

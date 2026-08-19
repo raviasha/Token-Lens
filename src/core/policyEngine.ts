@@ -17,8 +17,9 @@ export const DEFAULT_POLICY: CodeBuddyPolicy = {
   },
   context: {
     estimatedContextCapacityTokens: 40_000,
-    warningThreshold: 0.70,
-    criticalThreshold: 0.85,
+    warningThreshold: 0.55,
+    criticalThreshold: 0.65,
+    pauseThreshold: 0.70,
     allowVisionVerification: true,
     offerCurationOnNewSession: true,
     offerCurationOnNewTask: true

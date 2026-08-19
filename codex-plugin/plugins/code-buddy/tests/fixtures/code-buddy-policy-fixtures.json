@@ -1,4 +1,5 @@
 {
-  "validOverride": "version: 1\nthresholds:\n  promptQuality:\n    enhanceBelow: 90\n  estimatedContextPressure:\n    warningAt: 0.50\nmeasurement:\n  humanRetries:\n    minimumComparableTasks: 6\n    minimumTasksPerFactor: 4\n    reliabilityThreshold: 0.55\n    minimumEffectSize: 0.10\n    overdispersionThreshold: 1.25\n",
-  "invalidRelationship": "version: 1\nthresholds:\n  estimatedContextPressure:\n    warningAt: 0.70\n    criticalAt: 0.40\n"
+  "validOverride": "version: 1\nthresholds:\n  promptQuality:\n    enhanceBelow: 90\n  estimatedContextPressure:\n    warningAt: 0.50\n    pauseAt: 0.75\nmeasurement:\n  humanRetries:\n    minimumComparableTasks: 6\n    minimumTasksPerFactor: 4\n    reliabilityThreshold: 0.55\n    minimumEffectSize: 0.10\n    overdispersionThreshold: 1.25\n",
+  "invalidRelationship": "version: 1\nthresholds:\n  estimatedContextPressure:\n    warningAt: 0.60\n    criticalAt: 0.40\n",
+  "invalidPauseRelationship": "version: 1\nthresholds:\n  estimatedContextPressure:\n    criticalAt: 0.65\n    pauseAt: 0.60\n"
 }

@@ -41,6 +41,23 @@ function writePendingHandoff(workspace, handoff = {}) {
   }), 'utf8');
 }
 
+function writeRollout(sessionsRoot, workspace, sessionId, inputTokens, modelContextWindow = 200_000) {
+  const directory = path.join(sessionsRoot, '2026', '08', '18');
+  fs.mkdirSync(directory, { recursive: true });
+  const filePath = path.join(directory, `rollout-2026-08-18T00-00-00-${sessionId}.jsonl`);
+  const usage = {
+    input_tokens: inputTokens,
+    cached_input_tokens: Math.max(0, inputTokens - 1_000),
+    output_tokens: 100,
+    reasoning_output_tokens: 50,
+    total_tokens: inputTokens + 150
+  };
+  fs.writeFileSync(filePath, [
+    { timestamp: '2026-08-18T00:00:00.000Z', type: 'turn_context', payload: { cwd: workspace } },
+    { timestamp: '2026-08-18T00:00:01.000Z', type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: usage, total_token_usage: usage, model_context_window: modelContextWindow } } }
+  ].map(JSON.stringify).join('\n') + '\n', 'utf8');
+}
+
 test('injects automatic Code Buddy preflight for a meaningful request', () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-preflight-'));
   const { output } = runPluginHook({
@@ -80,6 +97,94 @@ test('surfaces warning native context snapshots without relabeling them as estim
   assert.match(context, /warning Actual Context Utilization/);
   assert.match(context, /native input-token\/model-window ratio/);
   assert.doesNotMatch(context, /Never claim this estimate is actual/);
+});
+
+test('uses a live native token count to warn before curation is recommended', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-early-warning-'));
+  const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-sessions-'));
+  writeRollout(sessionsRoot, workspace, 'early-warning', 120_000);
+
+  const { output } = runPluginHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'early-warning',
+    cwd: workspace,
+    prompt: 'Continue the current implementation and run its focused tests.'
+  }, workspace, { CODE_BUDDY_CODEX_SESSIONS_DIR: sessionsRoot });
+
+  const context = output?.hookSpecificOutput?.additionalContext || '';
+  assert.match(context, /warning Actual Context Utilization/);
+  assert.match(context, /curation choices begin at 65%/);
+  assert.doesNotMatch(context, /all three choices/);
+});
+
+test('recommends curation from the live native token count at 65 percent', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-curation-'));
+  const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-sessions-'));
+  writeRollout(sessionsRoot, workspace, 'curation-session', 132_000);
+
+  const { output } = runPluginHook({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'curation-session',
+    cwd: workspace,
+    prompt: 'Continue the current implementation and run its focused tests.'
+  }, workspace, { CODE_BUDDY_CODEX_SESSIONS_DIR: sessionsRoot });
+
+  const context = output?.hookSpecificOutput?.additionalContext || '';
+  assert.match(context, /critical Actual Context Utilization/);
+  assert.match(context, /fresh-task curation, current-task curation, or continuing unchanged/);
+});
+
+test('pauses implementation at 70 percent until the developer choice is recorded', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-pause-'));
+  const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-sessions-'));
+  const environment = { CODE_BUDDY_CODEX_SESSIONS_DIR: sessionsRoot };
+  writeRollout(sessionsRoot, workspace, 'pause-session', 144_000);
+
+  const blocked = runPluginHook({
+    hook_event_name: 'PreToolUse', session_id: 'pause-session', cwd: workspace,
+    tool_name: 'apply_patch', tool_use_id: 'edit-before-choice'
+  }, workspace, environment);
+  assert.equal(blocked.output?.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.match(blocked.output?.hookSpecificOutput?.permissionDecisionReason || '', /72\.0% actual/);
+  assert.match(blocked.output?.hookSpecificOutput?.permissionDecisionReason || '', /Curate for a fresh task/);
+
+  const observational = runPluginHook({
+    hook_event_name: 'PreToolUse', session_id: 'pause-session', cwd: workspace,
+    tool_name: 'read_file', tool_use_id: 'read-during-pause'
+  }, workspace, environment);
+  assert.equal(observational.output, null);
+
+  runPluginHook({
+    hook_event_name: 'PostToolUse', session_id: 'pause-session', cwd: workspace,
+    tool_name: 'mcp__code_buddy__record_intervention', tool_use_id: 'record-choice',
+    tool_input: { eventType: 'context.pre_compaction_choice', data: { choice: 'continue_unchanged' } },
+    tool_response: { status: 'recorded' }
+  }, workspace, environment);
+
+  const allowed = runPluginHook({
+    hook_event_name: 'PreToolUse', session_id: 'pause-session', cwd: workspace,
+    tool_name: 'apply_patch', tool_use_id: 'edit-after-choice'
+  }, workspace, environment);
+  assert.equal(allowed.output, null);
+  assert.ok(allowed.records.some((record) => record.recordType === 'context.pre_compaction_choice'
+    && record.data.choice === 'continue_unchanged'));
+});
+
+test('records when Codex compacts before a pre-compaction choice is completed', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-missed-'));
+  const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-sessions-'));
+  const environment = { CODE_BUDDY_CODEX_SESSIONS_DIR: sessionsRoot };
+  writeRollout(sessionsRoot, workspace, 'missed-session', 164_000);
+
+  const compacted = runPluginHook({
+    hook_event_name: 'PreCompact', session_id: 'missed-session', cwd: workspace,
+    trigger: 'auto'
+  }, workspace, environment);
+
+  const missed = compacted.records.findLast((record) => record.recordType === 'context.pre_compaction_missed');
+  assert.ok(missed);
+  assert.equal(missed.data.missed, true);
+  assert.equal(missed.data.reason, 'no_pre_compaction_pause_observed');
 });
 
 test('requires all four automatic Code Buddy tools before implementation', () => {

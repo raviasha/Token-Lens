@@ -69,7 +69,13 @@ Tool output can appear in a collapsed Thinking section, so the skill, MCP server
 
 ### 5. Context handoffs
 
-When context pressure is warning/critical or session fit identifies a likely new task, Code Buddy offers choices; it never switches tasks automatically. If the developer chooses a fresh-task handoff, `curate_context` writes a pending handoff record containing a marker and the selected context. The target task is held until the marker is pasted or the developer submits exactly `Code Buddy: continue without curated context`. The source task remains usable.
+At warning context pressure Code Buddy gives an early notice; at critical pressure it offers choices. With a live native Codex ratio at the pause threshold, `PreToolUse` pauses new implementation tools while leaving read/search and Code Buddy tools available. Session fit can independently identify a likely new task. Code Buddy never switches tasks automatically. If the developer chooses a fresh-task handoff, `curate_context` writes a pending handoff record containing a marker and the selected context. The target task is held until the marker is pasted or the developer submits exactly `Code Buddy: continue without curated context`. The source task remains usable.
+
+The pause state remains waiting until `curate_context` completes for a selected
+curation mode or `record_intervention` records an explicit
+`continue_unchanged` choice. `PreCompact` records
+`context.pre_compaction_missed` when Codex compacts before a choice, and records
+the resolved outcome separately when the developer acted first.
 
 ## Local data and reports
 
@@ -81,6 +87,7 @@ All generated data is workspace-local:
 ├── interventions.jsonl
 ├── .state/
 │   ├── preflight/
+│   ├── pre-compaction/
 │   └── pending-fresh-handoff.json
 └── telemetry/
     ├── raw/
@@ -169,8 +176,9 @@ thresholds:
     decomposeAtOrAbove: 65
   estimatedContextPressure:
     capacityTokens: 40000
-    warningAt: 0.70
-    criticalAt: 0.85
+    warningAt: 0.55
+    criticalAt: 0.65
+    pauseAt: 0.70
   sessionFit:
     recommendFreshTaskAtOrAbove: 75
     fallbackLexicalOverlapBelow: 0.20

@@ -5,6 +5,56 @@ import { CodeBuddyPolicy, ProjectPolicyDiagnostic, ProjectPolicyLoad } from './c
 type PolicyValue = boolean | number | PolicyMapping;
 interface PolicyMapping { [key: string]: PolicyValue; }
 
+export const DEFAULT_PROJECT_POLICY_YAML = `# Code Buddy per-project policy.
+# Commit this file to share settings, or keep it untracked for personal settings.
+version: 1
+healthCheck:
+  showOnEveryMeaningfulCodingTask: true
+thresholds:
+  promptQuality:
+    enhanceBelow: 75
+  taskScope:
+    decomposeAtOrAbove: 65
+  estimatedContextPressure:
+    # Used only when native model-window capacity is unavailable.
+    capacityTokens: 40000
+    warningAt: 0.55
+    criticalAt: 0.65
+    pauseAt: 0.70
+  sessionFit:
+    recommendFreshTaskAtOrAbove: 75
+    fallbackLexicalOverlapBelow: 0.20
+measurement:
+  humanRetries:
+    minimumComparableTasks: 8
+    minimumTasksPerFactor: 5
+    reliabilityThreshold: 0.60
+    minimumEffectSize: 0.15
+    overdispersionThreshold: 1.50
+`;
+
+export interface ProjectPolicyCreationResult {
+  filePath: string;
+  created: boolean;
+}
+
+export function createProjectPolicyFile(workspacePath: string): ProjectPolicyCreationResult {
+  const root = path.resolve(workspacePath);
+  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+    throw new Error(`Code Buddy workspace does not exist: ${root}`);
+  }
+  const filePath = path.join(root, 'code-buddy.yaml');
+  try {
+    fs.writeFileSync(filePath, DEFAULT_PROJECT_POLICY_YAML, { encoding: 'utf8', flag: 'wx' });
+    return { filePath, created: true };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      return { filePath, created: false };
+    }
+    throw error;
+  }
+}
+
 function clonePolicy(policy: CodeBuddyPolicy): CodeBuddyPolicy {
   return {
     healthCheck: { ...policy.healthCheck },
@@ -26,7 +76,7 @@ function diagnostic(
 }
 
 function stripComment(line: string): string {
-  return line.replace(/\s+#.*$/, '').trimEnd();
+  return line.replace(/(?:^|\s)#.*$/, '').trimEnd();
 }
 
 function parseScalar(value: string): boolean | number | undefined {
@@ -240,7 +290,7 @@ export function loadProjectPolicy(workspacePath: string | undefined, legacyPolic
 
   const context = mapping(thresholds.estimatedContextPressure);
   if (context) {
-    rejectUnknownKeys(context, ['capacityTokens', 'warningAt', 'criticalAt'], 'thresholds.estimatedContextPressure', diagnostics);
+    rejectUnknownKeys(context, ['capacityTokens', 'warningAt', 'criticalAt', 'pauseAt'], 'thresholds.estimatedContextPressure', diagnostics);
     const capacity = numberValue(context.capacityTokens, 'thresholds.estimatedContextPressure.capacityTokens', diagnostics, 1000, Number.MAX_SAFE_INTEGER, true);
     if (capacity !== undefined) {
       policy.context.estimatedContextCapacityTokens = capacity;
@@ -259,6 +309,18 @@ export function loadProjectPolicy(workspacePath: string | undefined, legacyPolic
     }
     if (policy.context.criticalThreshold < policy.context.warningThreshold) {
       policy.context.criticalThreshold = policy.context.warningThreshold;
+    }
+    const pause = numberValue(context.pauseAt, 'thresholds.estimatedContextPressure.pauseAt', diagnostics, 0, 1);
+    if (pause !== undefined) {
+      if (pause < policy.context.criticalThreshold) {
+        diagnostic(diagnostics, 'invalid_value', 'thresholds.estimatedContextPressure.pauseAt', 'pauseAt must be greater than or equal to criticalAt.');
+      } else {
+        policy.context.pauseThreshold = pause;
+      }
+    } else if (policy.context.pauseThreshold < policy.context.criticalThreshold) {
+      // v1 policy files that predate pauseAt keep their critical override and
+      // pause no earlier than that existing configured boundary.
+      policy.context.pauseThreshold = policy.context.criticalThreshold;
     }
   }
 

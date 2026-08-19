@@ -31,8 +31,9 @@ thresholds:
     decomposeAtOrAbove: 65
   estimatedContextPressure:
     capacityTokens: 40000
-    warningAt: 0.70
-    criticalAt: 0.85
+    warningAt: 0.55
+    criticalAt: 0.65
+    pauseAt: 0.70
   sessionFit:
     recommendFreshTaskAtOrAbove: 75
     fallbackLexicalOverlapBelow: 0.20
@@ -44,6 +45,52 @@ measurement:
     minimumEffectSize: 0.15
     overdispersionThreshold: 1.50
 ```
+
+### Create and personalize the project configuration
+
+Code Buddy uses the defaults above without creating a project file. This keeps
+installation side-effect free: installing a VSIX or Codex plugin never silently
+adds or replaces repository settings.
+
+- **VS Code:** run **Code Buddy: Create or Open Project Configuration**. The
+  hook installer also offers this action after installation. It creates
+  `code-buddy.yaml` when absent, then opens it.
+- **Codex:** ask Code Buddy to create the project configuration. Codex calls
+  `create_project_config` with the active workspace and returns the created
+  path.
+- **Existing configuration:** both facilities open or report the existing
+  file without changing it. They never overwrite personalized settings.
+
+Commit `code-buddy.yaml` when the team should share one policy. For settings
+that should remain personal, leave the file untracked or add it to a personal
+Git exclude. After editing it, start the next Codex prompt normally. In VS
+Code, reload the window and rerun **Code Buddy: Install Copilot Hooks** so both
+the language-model tools and installed hook environment use the new values.
+
+### Default settings
+
+| YAML setting | Default | Effect |
+| --- | ---: | --- |
+| `healthCheck.showOnEveryMeaningfulCodingTask` | `true` | Shows the four-part health line for meaningful coding tasks. |
+| `thresholds.promptQuality.enhanceBelow` | `75` | Offers prompt enhancement below this score. |
+| `thresholds.taskScope.decomposeAtOrAbove` | `65` | Offers decomposition at or above this complexity score. |
+| `thresholds.estimatedContextPressure.capacityTokens` | `40000` | Denominator only for the explicitly labeled fallback estimate. |
+| `thresholds.estimatedContextPressure.warningAt` | `0.55` | Shows an early context warning at 55%. |
+| `thresholds.estimatedContextPressure.criticalAt` | `0.65` | Offers developer-controlled curation at 65%. |
+| `thresholds.estimatedContextPressure.pauseAt` | `0.70` | Pauses new Codex implementation tools at 70% actual utilization until the developer chooses. |
+| `thresholds.sessionFit.recommendFreshTaskAtOrAbove` | `75` | Offers a fresh-task handoff at or above this likelihood score. |
+| `thresholds.sessionFit.fallbackLexicalOverlapBelow` | `0.20` | Fallback overlap boundary when semantic session-fit evidence is unavailable. |
+| `measurement.humanRetries.minimumComparableTasks` | `8` | Minimum comparable completed tasks before personalized recommendations. |
+| `measurement.humanRetries.minimumTasksPerFactor` | `5` | Minimum observations required for each analyzed factor. |
+| `measurement.humanRetries.reliabilityThreshold` | `0.60` | Minimum configured reliability score for recommendations. |
+| `measurement.humanRetries.minimumEffectSize` | `0.15` | Minimum observed association size worth presenting. |
+| `measurement.humanRetries.overdispersionThreshold` | `1.50` | Switches Poisson analysis to the negative-binomial fallback when exceeded. |
+
+Use ratios from `0` to `1` for context and reliability settings, and scores
+from `0` to `100` for prompt, task, and session-fit settings. Keep
+`warningAt <= criticalAt <= pauseAt`. The parser accepts two-space mappings,
+booleans, numbers, and comments; an invalid field falls back independently to
+its built-in or VS Code setting.
 
 Code Buddy starts every meaningful coding task with one compact health line:
 `prompt quality`, `task scope`, `context utilization`, and `session fit`.
@@ -76,6 +123,8 @@ worded as an observed association rather than a causal or personalized claim.
   model tokens and persists no raw rollout content.
 - Every prompt now receives an explicit model-presented personalized-feedback
   status, including a clear **Not enough data yet** message during cold start.
+- Users can create a safe per-project `code-buddy.yaml` from VS Code or Codex;
+  existing personalized files are never overwritten.
 - Schema-1.1 local telemetry distinguishes human-requested corrective retries
   from clarifications, extensions, new tasks, and agent-internal attempts.
 - Comparable-task evidence uses descriptive comparisons and interpretable
@@ -421,7 +470,7 @@ Response:
 
 This is a deterministic lexical task-boundary cue, not a claim of perfect semantic classification. The developer always chooses what happens next.
 
-### 3. Warning or critical context pressure
+### 3. Pre-compaction context intervention
 
 Trigger conditions:
 
@@ -431,15 +480,20 @@ Trigger conditions:
 
 Response:
 
-- Records `context.measured` and `context.warning`.
-- Offers **Start fresh with curated context**, **Curate current task**, or **Continue unchanged**.
+- At 55%, records and displays an early warning.
+- At 65%, offers **Start fresh with curated context**, **Curate current task**, or **Continue unchanged**.
+- At 70% actual native utilization, the Codex plugin pauses new implementation tools until one of those choices is explicitly recorded. Read/search and Code Buddy tools remain available.
 - Records `context.warning_choice`.
 - Starts curation only when the developer chooses it.
 
-Warning and critical defaults are 70% and 85%. For a native Codex measurement,
-they apply to the actual input-token/model-window ratio. The 40,000-token
-setting is used only by the fallback estimate and is not a claim about the
-selected model's actual context window.
+Warning, curation, and pause defaults are 55%, 65%, and 70%. For a native Codex
+measurement, they apply to the actual input-token/model-window ratio. The hard
+pause requires that live native ratio; an estimate can warn and recommend but
+does not stop tools. The 40,000-token setting is used only by the fallback
+estimate and is not a claim about the selected model's actual context window.
+Code Buddy cannot disable Codex's automatic compaction; it intervenes early so
+the developer can curate the intact history first. If Codex compacts before a
+choice is recorded, Code Buddy records `context.pre_compaction_missed` locally.
 
 ## Workspace files and local state
 
@@ -463,7 +517,7 @@ Every session record includes a stable `eventId`, `recordType`, `sessionId`, tim
 
 ### Direct hook records
 
-`session.started`, `session.ended`, `user.prompt`, `prompt.transformed`, `tool.started`, `tool.completed`, `tool.failed`, `agent.stopped`, `subagent.started`, `subagent.completed`, `error.occurred`, `context.compacted`, `context.compaction_completed`, and fallback `hook.event`.
+`session.started`, `session.ended`, `user.prompt`, `prompt.transformed`, `tool.started`, `tool.completed`, `tool.failed`, `agent.stopped`, `subagent.started`, `subagent.completed`, `error.occurred`, `context.compacted`, `context.compaction_completed`, `context.pre_compaction_paused`, `context.pre_compaction_choice`, `context.pre_compaction_missed`, and fallback `hook.event`.
 
 ### Preflight records
 
@@ -509,6 +563,7 @@ VS Code **Chat Debug** may show internal provider calls as `copilotLanguageModel
 
 | Command | Result |
 | --- | --- |
+| **Code Buddy: Create or Open Project Configuration** | Creates the default `code-buddy.yaml` when absent, or opens the existing file without changing it. |
 | **Code Buddy: Install Copilot Hooks** | Installs or refreshes workspace hooks and managed agent instructions. |
 | **Code Buddy: Remove Copilot Hooks** | Removes Code Buddy's hook configuration and managed instruction section; keeps logs/reports. |
 | **Code Buddy: Open Session Log** | Opens `.code-buddy/copilot-session.jsonl`. The Code Buddy status-bar item runs this command. |

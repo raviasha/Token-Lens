@@ -264,6 +264,12 @@ export class DeterministicGovernance {
       const contextDetail = measurement.measurement.utilization !== undefined && measurement.measurement.capacityTokens
         ? `${(measurement.measurement.utilization * 100).toFixed(1)}% (${measurement.measurement.value.toLocaleString()} / ${measurement.measurement.capacityTokens.toLocaleString()} input tokens)`
         : `~${measurement.measurement.value.toLocaleString()} ${measurement.measurement.unit.replace('_', ' ')}`;
+      if (measurement.measurement.thresholdState === 'warning') {
+        await vscode.window.showWarningMessage(
+          `${measurement.measurement.terminology} is rising (${contextDetail}). Code Buddy will recommend curation at ${(this.dependencies.policy.context.criticalThreshold * 100).toFixed(0)}%.`
+        );
+        return;
+      }
       const action = await vscode.window.showWarningMessage(
         `${measurement.measurement.terminology} is ${measurement.measurement.thresholdState} (${contextDetail}). Continuing may increase noise or token cost.`,
         'Start fresh with curated context',
