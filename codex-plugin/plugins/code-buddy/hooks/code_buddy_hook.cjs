@@ -502,6 +502,33 @@ function readJsonIfPresent(filePath) {
   }
 }
 
+function liveCardStatePath(logPath, sessionId) {
+  const stateDirectory = process.env.TOKEN_LENS_STATE_DIR || path.join(path.dirname(logPath), '.state');
+  return path.join(stateDirectory, 'live-card', `${safeStatePart(sessionId)}.json`);
+}
+
+function clearLiveCardOpenState(logPath, sessionId) {
+  try {
+    fs.unlinkSync(liveCardStatePath(logPath, sessionId));
+  } catch (error) {
+    if (!error || error.code !== 'ENOENT') throw error;
+  }
+}
+
+function liveCardOpenOutput(logPath, payload, event, sessionId) {
+  if (!(event === 'UserPromptSubmit' || event === 'userPromptSubmitted')
+    || !sessionId || !isMeaningfulPrompt(getValue(payload, 'prompt'))) return null;
+  const marker = liveCardStatePath(logPath, sessionId);
+  if (fs.existsSync(marker)) return null;
+  writeJsonAtomic(marker, { schemaVersion: 1, sessionId, openedAt: new Date().toISOString() });
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: `Open the expanded live Task Card before substantive work by calling mcp__code_buddy__task_card_open with {"workspace":${JSON.stringify(getWorkspace(payload))},"liveSessionId":${JSON.stringify(sessionId)}}. This is non-blocking: do not generate or update the card.`
+    }
+  };
+}
+
 function preCompactionStatePath(logPath, sessionId) {
   const stateDirectory = process.env.TOKEN_LENS_STATE_DIR || path.join(path.dirname(logPath), '.state');
   return path.join(stateDirectory, 'pre-compaction', `${safeStatePart(sessionId)}.json`);
@@ -1896,6 +1923,9 @@ function main(input) {
   }
   // Capture remains active even when legacy gates, advice and report refreshes are disabled.
   if (process.env.CODE_BUDDY_LEGACY_GOVERNANCE !== 'true') {
+    if (event === 'SessionStart' || event === 'sessionStart') {
+      clearLiveCardOpenState(logPath, sessionId);
+    }
     if (event === 'UserPromptSubmit' || event === 'userPromptSubmitted') {
       runCodeBuddy('start_turn', payload, sessionId, eventId);
     }
@@ -1904,7 +1934,12 @@ function main(input) {
       runCodeBuddy('end_turn', payload, sessionId, eventId);
       captureTelemetry(payload, { platform: 'codex', editor: 'codex', legacyLogPath: logPath });
     }
-    return null;
+    try {
+      return liveCardOpenOutput(logPath, payload, event, sessionId);
+    } catch (error) {
+      process.stderr.write(`Code Buddy live Task Card warning: ${error instanceof Error ? error.message : String(error)}\n`);
+      return null;
+    }
   }
   const handoff = handlePendingHandoffEvent(logPath, payload, event);
   let runtimeOutput;
