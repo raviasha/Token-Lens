@@ -8,7 +8,7 @@ import {
   mergeCodeBuddyAgentInstructions,
   removeCodeBuddyAgentInstructions
 } from './agentInstructions';
-import { getCodeBuddyPolicy } from './config';
+import { getCodeBuddyPolicy, isLegacyGovernanceEnabled } from './config';
 
 export const hookConfigRelativePath = path.join('.github', 'hooks', 'token-lens.json');
 export const agentInstructionsRelativePath = path.join('.github', 'copilot-instructions.md');
@@ -286,6 +286,7 @@ function createHookEntry(
       TOKEN_LENS_HEALTH_CHECK_VISIBLE: String(settings.healthCheckVisible),
       TOKEN_LENS_PREFLIGHT_ENFORCE: String(settings.preflightEnforceBeforeImplementation),
       TOKEN_LENS_PREFLIGHT_DENIALS_BEFORE_FALLBACK: String(settings.preflightDenialsBeforeFallback),
+      CODE_BUDDY_LEGACY_GOVERNANCE: String(isLegacyGovernanceEnabled(root)),
       TOKEN_LENS_TELEMETRY_ENABLED: String(settings.telemetryEnabled),
       TOKEN_LENS_TELEMETRY_LEVEL: settings.telemetryLevel,
       TOKEN_LENS_TELEMETRY_CAPTURE_RAW_CONTENT: String(settings.telemetryCaptureRawContent),
@@ -368,7 +369,7 @@ async function installAgentInstructions(root: vscode.Uri): Promise<string> {
   const existing = await readTextIfPresent(instructionsPath);
 
   await fs.mkdir(path.dirname(instructionsPath), { recursive: true });
-  await fs.writeFile(instructionsPath, mergeCodeBuddyAgentInstructions(existing), 'utf8');
+  await fs.writeFile(instructionsPath, mergeCodeBuddyAgentInstructions(existing, isLegacyGovernanceEnabled(root)), 'utf8');
 
   const legacy = await readTextIfPresent(legacyInstructionsPath);
   if (legacy !== undefined && isManagedInstruction(legacy)) {

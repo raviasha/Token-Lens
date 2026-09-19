@@ -1276,7 +1276,8 @@ def end_turn():
         }
     append_outcome(log_path, session_id, workspace, prompt_event_id, prompt_event_ids, event_id, metrics, available)
     append_context_snapshot(log_path, session_id, workspace, prompt_event_id, event_id)
-    refresh_reports(log_path, feedback_path, analytics_path, session_id)
+    if env_bool("CODE_BUDDY_LEGACY_GOVERNANCE", False):
+        refresh_reports(log_path, feedback_path, analytics_path, session_id)
 
 
 def main():

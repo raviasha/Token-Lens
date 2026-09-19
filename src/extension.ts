@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import { ContextCurationService, PromptReviewService, SessionFitService, TaskDecompositionService } from './ai/services';
 import { registerCodeBuddyTools } from './ai/tools';
 import { VscodeStructuredReasoner } from './ai/vscodeReasoner';
-import { getCodeBuddyPolicy } from './config';
+import { getCodeBuddyPolicy, isLegacyGovernanceEnabled } from './config';
 import { JsonlInterventionStore } from './core/eventStore';
 import { createProjectPolicyFile } from './core/projectPolicy';
 import {
@@ -25,6 +25,7 @@ import { ContextMeasurementService } from './providers/contextMeasurement';
 import { DeterministicGovernance } from './runtime/governance';
 import { CodeBuddyWorkflow } from './runtime/workflow';
 import { InterventionPresenter } from './ui/interventionPresenter';
+import { registerTaskCards } from './taskCards';
 
 const execFileAsync = promisify(execFile);
 
@@ -68,18 +69,8 @@ function watchCodeBuddyFile(context: vscode.ExtensionContext): void {
   context.subscriptions.push(watcher, watcher.onDidChange(refreshOpenFile), watcher.onDidCreate(refreshOpenFile));
 }
 
-export function activate(context: vscode.ExtensionContext): void {
-  const output = vscode.window.createOutputChannel('Code Buddy');
-  context.subscriptions.push(output);
-
-  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  status.text = '$(record) Code Buddy';
-  status.tooltip = 'Open Code Buddy session log';
-  status.command = 'tokenLens.openLog';
-  status.show();
-  context.subscriptions.push(status);
+function registerLegacyFeatures(context: vscode.ExtensionContext): void {
   watchCodeBuddyFile(context);
-
   const policy = getCodeBuddyPolicy(vscode.workspace.workspaceFolders?.[0]?.uri);
   const reasoner = new VscodeStructuredReasoner();
   const promptReviewer = new PromptReviewService(reasoner, policy);
@@ -143,62 +134,12 @@ export function activate(context: vscode.ExtensionContext): void {
         await vscode.window.showErrorMessage(`Code Buddy could not create the project configuration: ${message}`);
       }
     }),
-    vscode.commands.registerCommand('tokenLens.installHooks', async () => {
-      try {
-        const result = await installHooks(context);
-        output.appendLine(`Installed Copilot hooks at ${result.configPath}`);
-        output.appendLine(`Writing structured records to ${result.logPath}`);
-        output.appendLine(`Writing current feedback to ${result.feedbackPath}`);
-        output.appendLine(`Writing detailed analytics to ${result.analyticsPath}`);
-        output.appendLine(`Writing structured interventions to ${result.interventionLogPath}`);
-        output.appendLine(`Writing versioned task telemetry to ${result.telemetryPath}`);
-        output.appendLine(`Installed Code Buddy agent instructions at ${result.instructionsPath}`);
-        const choice = await vscode.window.showInformationMessage(
-          `${result.created ? 'Code Buddy Copilot hooks installed.' : 'Code Buddy Copilot hooks updated.'} Built-in defaults are active unless this project has code-buddy.yaml.`,
-          'Create or Open Project Configuration'
-        );
-        if (choice === 'Create or Open Project Configuration') {
-          await vscode.commands.executeCommand('tokenLens.createProjectConfig');
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        output.appendLine(`Install failed: ${message}`);
-        await vscode.window.showErrorMessage(`Code Buddy could not install hooks: ${message}`);
-      }
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('tokenLens.removeHooks', async () => {
-      try {
-        const configPath = await removeHooks();
-        output.appendLine(`Removed Copilot hooks at ${configPath}`);
-        await vscode.window.showInformationMessage('Code Buddy Copilot hooks removed. Existing logs were kept.');
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        output.appendLine(`Remove failed: ${message}`);
-        await vscode.window.showErrorMessage(`Code Buddy could not remove hooks: ${message}`);
-      }
-    })
-  );
-
-  context.subscriptions.push(
     vscode.commands.registerCommand('tokenLens.openInterventions', async () => {
       try {
         await openWorkspaceFile(getCurrentInterventionLogPath());
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await vscode.window.showErrorMessage(`Code Buddy could not open interventions: ${message}`);
-      }
-    }),
-    vscode.commands.registerCommand('tokenLens.openTelemetry', async () => {
-      try {
-        const rawDirectory = path.join(getCurrentTelemetryPath(), 'raw');
-        await fs.mkdir(rawDirectory, { recursive: true });
-        await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(rawDirectory));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await vscode.window.showErrorMessage(`Code Buddy could not open raw telemetry: ${message}`);
       }
     }),
     vscode.commands.registerCommand('tokenLens.replayTelemetryTask', async () => {
@@ -266,21 +207,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('tokenLens.reviewPrompt', () => workflow.reviewPrompt()),
     vscode.commands.registerCommand('tokenLens.decomposeTask', () => workflow.decomposeTask()),
     vscode.commands.registerCommand('tokenLens.measureContext', () => workflow.measureContext()),
-    vscode.commands.registerCommand('tokenLens.curateContext', () => workflow.curate(undefined, 'fresh_task'))
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('tokenLens.openLog', async () => {
-      try {
-        await openWorkspaceFile(getCurrentLogPath());
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await vscode.window.showErrorMessage(`Code Buddy could not open the log: ${message}`);
-      }
-    })
-  );
-
-  context.subscriptions.push(
+    vscode.commands.registerCommand('tokenLens.curateContext', () => workflow.curate(undefined, 'fresh_task')),
     vscode.commands.registerCommand('tokenLens.openCodeBuddy', async () => {
       try {
         await openWorkspaceFile(getCurrentFeedbackPath());
@@ -288,10 +215,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const message = error instanceof Error ? error.message : String(error);
         await vscode.window.showErrorMessage(`Code Buddy could not open feedback: ${message}`);
       }
-    })
-  );
-
-  context.subscriptions.push(
+    }),
     vscode.commands.registerCommand('tokenLens.openAnalytics', async () => {
       try {
         await openWorkspaceFile(getCurrentAnalyticsPath());
@@ -301,8 +225,69 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     })
   );
+}
+
+export function activate(context: vscode.ExtensionContext): void {
+  const output = vscode.window.createOutputChannel('Code Buddy');
+  context.subscriptions.push(output);
+  registerTaskCards(context, output);
+
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  status.text = '$(record) Code Buddy Capture';
+  status.tooltip = 'Open Code Buddy session log';
+  status.command = 'tokenLens.openLog';
+  status.show();
+  context.subscriptions.push(status);
+  if (isLegacyGovernanceEnabled()) {
+    registerLegacyFeatures(context);
+  }
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('tokenLens.installHooks', async () => {
+      try {
+        const result = await installHooks(context);
+        output.appendLine(`Installed Copilot hooks at ${result.configPath}`);
+        output.appendLine(`Writing structured records to ${result.logPath}`);
+        output.appendLine(`Writing versioned task telemetry to ${result.telemetryPath}`);
+        output.appendLine(`Installed Code Buddy agent instructions at ${result.instructionsPath}`);
+        await vscode.window.showInformationMessage(
+          `${result.created ? 'Code Buddy Copilot hooks installed.' : 'Code Buddy Copilot hooks updated.'} Local capture is enabled; legacy analysis is inactive by default.`
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.appendLine(`Install failed: ${message}`);
+        await vscode.window.showErrorMessage(`Code Buddy could not install hooks: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('tokenLens.removeHooks', async () => {
+      try {
+        const configPath = await removeHooks();
+        output.appendLine(`Removed Copilot hooks at ${configPath}`);
+        await vscode.window.showInformationMessage('Code Buddy Copilot hooks removed. Existing logs were kept.');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.appendLine(`Remove failed: ${message}`);
+        await vscode.window.showErrorMessage(`Code Buddy could not remove hooks: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('tokenLens.openTelemetry', async () => {
+      try {
+        const rawDirectory = path.join(getCurrentTelemetryPath(), 'raw');
+        await fs.mkdir(rawDirectory, { recursive: true });
+        await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(rawDirectory));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open raw telemetry: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('tokenLens.openLog', async () => {
+      try {
+        await openWorkspaceFile(getCurrentLogPath());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open the log: ${message}`);
+      }
+    }),
     vscode.commands.registerCommand('tokenLens.openHookConfig', async () => {
       try {
         await vscode.window.showTextDocument(vscode.Uri.file(getCurrentHookConfigPath()), { preview: false });
@@ -310,10 +295,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const message = error instanceof Error ? error.message : String(error);
         await vscode.window.showErrorMessage(`Code Buddy could not open the hook configuration: ${message}`);
       }
-    })
-  );
-
-  context.subscriptions.push(
+    }),
     vscode.commands.registerCommand('tokenLens.openAgentInstructions', async () => {
       try {
         await vscode.window.showTextDocument(vscode.Uri.file(getCurrentAgentInstructionsPath()), { preview: false });

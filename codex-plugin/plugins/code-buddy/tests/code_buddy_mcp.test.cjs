@@ -21,7 +21,7 @@ function call(name, arguments, environment = {}) {
   const result = spawnSync('python3', [mcpPath], {
     input: `${JSON.stringify(request)}\n`,
     encoding: 'utf8',
-    env: { ...process.env, ...environment }
+    env: { ...process.env, CODE_BUDDY_LEGACY_GOVERNANCE: 'true', ...environment }
   });
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout.trim()).result.structuredContent;
@@ -54,7 +54,7 @@ function curate(workspace, mode, developerConfirmed) {
       }
     }
   };
-  const result = spawnSync('python3', [mcpPath], { input: `${JSON.stringify(request)}\n`, encoding: 'utf8' });
+  const result = spawnSync('python3', [mcpPath], { input: `${JSON.stringify(request)}\n`, encoding: 'utf8', env: { ...process.env, CODE_BUDDY_LEGACY_GOVERNANCE: 'true' } });
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout.trim()).result.structuredContent;
 }
@@ -104,7 +104,7 @@ test('session status exposes task telemetry and replay paths', () => {
     tasks: { task_status: { task_id: 'task_status' } }
   }), 'utf8');
   const status = call('session_status', { workspace });
-  assert.equal(status.telemetrySchemaVersion, '1.1');
+  assert.equal(status.telemetrySchemaVersion, '1.2');
   assert.equal(status.telemetryTaskCount, 1);
   assert.equal(status.activeTaskId, 'task_status');
   assert.match(status.telemetryRawDirectory, /\.code-buddy[/\\]telemetry[/\\]raw$/);
@@ -206,4 +206,13 @@ test('create_project_config writes defaults once and preserves an existing perso
   assert.equal(second.status, 'exists');
   assert.equal(second.created, false);
   assert.match(fs.readFileSync(second.filePath, 'utf8'), /enhanceBelow: 90/);
+});
+
+test('session status does not attribute another session’s task to the requested session', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-status-scope-'));
+  const statePath = path.join(workspace, '.code-buddy', 'telemetry', '.state', 'telemetry-state.json');
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  fs.writeFileSync(statePath, JSON.stringify({ active_task: { task_id: 'unrelated' }, tasks: {}, sessions: { selected: { task_id: 'selected-task' } } }));
+  assert.equal(call('session_status', { workspace, sessionId: 'selected' }).activeTaskId, 'selected-task');
+  assert.equal(call('session_status', { workspace, sessionId: 'missing' }).activeTaskId, null);
 });

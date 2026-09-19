@@ -17,3 +17,6 @@ Code Buddy Analytics.md
 *Context Handoff.md
 *.vsix
 *-SHA256SUMS.txt
+
+# Exclude unrelated local artifacts from development packages.
+snake.html

@@ -2,7 +2,15 @@ export const codeBuddyInstructionsMarker = '<!-- code-buddy-managed:v1 -->';
 export const codeBuddyInstructionsStartMarker = '<!-- code-buddy-managed:start:v2 -->';
 export const codeBuddyInstructionsEndMarker = '<!-- code-buddy-managed:end:v2 -->';
 
-function instructionBody(): string[] {
+function instructionBody(legacyEnabled: boolean): string[] {
+  if (!legacyEnabled) return [
+    '# Code Buddy capture',
+    '',
+    '- Code Buddy records local telemetry. Legacy prompt review, task decomposition, context-pressure advice, fresh-task suggestions, curated handoffs, and mandatory health lines are inactive.',
+    '- Continue the developer’s requested work without Code Buddy preflight checks, scores, or personalized-retry advice.',
+    '- Preserve existing Code Buddy Markdown reports. Task-card analysis is a separate downstream feature; do not claim it is available before implementation.',
+    '- Diagnostic conversation content requires telemetry.level=diagnostic and telemetry.captureRawContent=true. Missing content is unavailable evidence, not an empty conversation.'
+  ];
   return [
     '# Code Buddy governance',
     '',
@@ -21,10 +29,10 @@ function instructionBody(): string[] {
   ];
 }
 
-export function buildCodeBuddyAgentInstructions(): string {
+export function buildCodeBuddyAgentInstructions(legacyEnabled = false): string {
   return [
     codeBuddyInstructionsStartMarker,
-    ...instructionBody(),
+    ...instructionBody(legacyEnabled),
     codeBuddyInstructionsEndMarker,
     ''
   ].join('\n');
@@ -34,9 +42,9 @@ function normalizeNewlines(value: string): string {
   return value.replace(/\r\n/g, '\n');
 }
 
-export function mergeCodeBuddyAgentInstructions(existing: string | undefined): string {
+export function mergeCodeBuddyAgentInstructions(existing: string | undefined, legacyEnabled = false): string {
   const current = normalizeNewlines(existing ?? '');
-  const managedBlock = buildCodeBuddyAgentInstructions().trimEnd();
+  const managedBlock = buildCodeBuddyAgentInstructions(legacyEnabled).trimEnd();
   const start = current.indexOf(codeBuddyInstructionsStartMarker);
   const end = current.indexOf(codeBuddyInstructionsEndMarker);
 

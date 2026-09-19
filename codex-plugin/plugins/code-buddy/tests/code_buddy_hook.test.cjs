@@ -15,6 +15,7 @@ function runPluginHook(payload, workspace, environment = {}) {
     encoding: 'utf8',
     env: {
       ...process.env,
+      CODE_BUDDY_LEGACY_GOVERNANCE: 'true',
       TOKEN_LENS_LOG_FILE: logPath,
       TOKEN_LENS_INTERVENTION_LOG_FILE: path.join(workspace, '.code-buddy', 'interventions.jsonl'),
       TOKEN_LENS_REDACT_SENSITIVE: 'true',

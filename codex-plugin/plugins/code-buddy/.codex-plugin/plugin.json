@@ -1,7 +1,7 @@
 {
   "name": "code-buddy",
-  "version": "0.9.0+codex.20260819044601",
-  "description": "Local governance, prompt quality, context handoffs, and replayable task telemetry for Codex coding tasks.",
+  "version": "0.10.6+codex.20260919210904",
+  "description": "Local coding-agent evidence capture and on-demand Task Card. Legacy governance is inactive.",
   "author": {
     "name": "Code Buddy",
     "url": "https://github.com/raviasha/Token-Lens"
@@ -20,8 +20,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Code Buddy",
-    "shortDescription": "Governance and local analytics for Codex coding tasks.",
-    "longDescription": "Code Buddy captures Codex lifecycle events locally, enforces a developer-controlled preflight, reviews prompts, offers optional task decomposition and context handoffs, records privacy-first task telemetry, and rebuilds task lifecycles without a cloud service.",
+    "shortDescription": "Local capture and on-demand Task Card.",
+    "longDescription": "Code Buddy records local lifecycle, transcript, tool, usage and outcome evidence and offers a local Task Card. Legacy scores, preflight gates, context interventions and report refreshes are disabled by default.",
     "developerName": "Code Buddy",
     "category": "Developer Tools",
     "capabilities": [
@@ -30,9 +30,8 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Use Code Buddy to review my next coding task.",
-      "Show Code Buddy status for this workspace.",
-      "Create a focused Code Buddy handoff for a fresh task."
+      "Open the Task Card widget for this workspace.",
+      "Show Code Buddy capture status for this workspace."
     ],
     "brandColor": "#2563EB"
   },

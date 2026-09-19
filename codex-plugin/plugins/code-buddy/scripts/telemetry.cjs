@@ -6,8 +6,8 @@ const crypto = require('node:crypto');
 const childProcess = require('node:child_process');
 const os = require('node:os');
 
-const TELEMETRY_SCHEMA_VERSION = '1.1';
-const SUPPORTED_TELEMETRY_SCHEMA_VERSIONS = new Set(['1.0', '1.1']);
+const TELEMETRY_SCHEMA_VERSION = '1.2';
+const SUPPORTED_TELEMETRY_SCHEMA_VERSIONS = new Set(['1.0', '1.1', '1.2']);
 const STATE_SCHEMA_VERSION = 1;
 const HUMAN_RETRY_DATASET_VERSION = 'human-retry-task-v1';
 const HUMAN_RETRY_ANALYSIS_VERSION = 'human-retry-analysis-v1';
@@ -26,7 +26,9 @@ const EVENT_TYPES = new Set([
   'agent_response', 'developer_followup', 'retry_detected', 'implementation_attempt_observed',
   'human_retry_detected', 'recommendation_applied', 'scope_changed', 'context_snapshot',
   'conversation_compacted', 'session_changed', 'handoff_created', 'ai_usage', 'tool_activity',
-  'file_activity', 'git_event', 'test_run', 'build_run'
+  'file_activity', 'git_event', 'test_run', 'build_run',
+  'response_completed', 'interaction_failed', 'interaction_cancelled', 'session_ended', 'task_closed',
+  'recorder_started', 'recorder_stopped', 'recorder_error', 'event_dropped', 'parse_failure', 'write_failure'
 ]);
 const REQUIRED_PAYLOAD_FIELDS = {
   task_created: ['task_type', 'initial_complexity', 'objective', 'task_detection'],
@@ -72,7 +74,7 @@ const SECRET_PATTERNS = [
   /(?:token|secret|password|passwd|api[_-]?key|authorization|cookie|credential)\s*[:=]\s*[^\s,;]+/gi,
   /bearer\s+[a-z0-9._~+/=-]+/gi,
   /(?:ghp|gho|ghu|ghs|ghr|github_pat)_[a-z0-9_]+/gi,
-  /sk-[a-z0-9_-]+/gi,
+  /(?<![a-z0-9_-])sk-[a-z0-9_-]+/gi,
   /AKIA[0-9A-Z]{16}/g,
   /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g
 ];
@@ -93,6 +95,19 @@ function redactRawContent(value) {
   let redacted = String(value || '');
   for (const pattern of SECRET_PATTERNS) redacted = redacted.replace(pattern, '[REDACTED]');
   return redacted;
+}
+
+function redact(value, key) {
+  // Numeric provider counters are measurements, not credential values.
+  if (key && /^(?:input_tokens|output_tokens|cached_input_tokens|cache_write_input_tokens|cache_creation_input_tokens|reasoning_tokens|reasoning_output_tokens|total_tokens|inputTokens|outputTokens|cachedInputTokens|cacheWriteTokens|reasoningTokens|totalTokens)$/.test(key) && typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  if (key && /^(?:usage|token_usage|thread_token_usage|turn_token_usage|last_token_usage|total_token_usage)$/.test(key) && value && typeof value === 'object' && !Array.isArray(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redact(v, k)]));
+  if (key && /(?:token|secret|password|passwd|api[_-]?key|authorization|cookie|credential|private[_-]?key)/i.test(key)) return '[REDACTED]';
+  if (typeof value === 'string') return redactRawContent(value);
+  if (Array.isArray(value)) return value.map((item) => redact(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [entryKey, redact(entryValue, entryKey)]));
+  }
+  return value;
 }
 
 function hash(value, length = 24) {
@@ -303,8 +318,8 @@ function telemetryLevel() {
 
 function captureRawContent() {
   return telemetryLevel() === 'diagnostic'
-    && (process.env.CODE_BUDDY_TELEMETRY_CAPTURE_RAW_CONTENT === 'true'
-      || process.env.TOKEN_LENS_TELEMETRY_CAPTURE_RAW_CONTENT === 'true');
+    && (process.env.CODE_BUDDY_TELEMETRY_CAPTURE_RAW_CONTENT
+      ?? process.env.TOKEN_LENS_TELEMETRY_CAPTURE_RAW_CONTENT) === 'true';
 }
 
 function eventAllowed(eventType, level) {
@@ -494,6 +509,60 @@ function sessionState(state, sessionId) {
   return state.sessions[sessionId];
 }
 
+function sourceIdentifier(payload, ...keys) {
+  const value = getValue(payload, ...keys);
+  return value === undefined || value === null || value === '' ? null : String(value);
+}
+
+function captureStatus(value, options = {}) {
+  if (options.error) return 'recorder_failure';
+  if (options.redacted) return 'intentionally_redacted';
+  if (options.truncated) return 'truncated';
+  return value === undefined || value === null ? 'unavailable_from_source' : 'captured';
+}
+
+function contentCaptureStatus(value, options = {}) {
+  if (!captureRawContent()) return 'disabled';
+  if (value === undefined || value === null) return 'unavailable_from_source';
+  if (options.truncated) return 'truncated';
+  return JSON.stringify(redact(value)) !== JSON.stringify(value) ? 'intentionally_redacted' : 'captured';
+}
+
+function workspaceRelativePath(workspace, filePath) {
+  if (!filePath) return null;
+  const absolute = path.resolve(workspace, filePath);
+  const relative = path.relative(workspace, absolute);
+  return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative : null;
+}
+
+function fileSnapshot(workspace, filePath) {
+  if (!filePath) return null;
+  const absolute = path.resolve(workspace, filePath);
+  const relative = workspaceRelativePath(workspace, filePath);
+  if (!relative || !fs.existsSync(absolute)) return null;
+  try {
+    return {
+      path: relative,
+      before_hash: hash(fs.readFileSync(absolute))
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistToolResult(root, toolCallId, value) {
+  const redacted = redact(value);
+  const text = typeof redacted === 'string' ? redacted : JSON.stringify(redacted) || '';
+  if (text.length <= 250_000) return { result: redactRawContent(text), result_ref: null, truncated: false };
+  const digest = hash(`${toolCallId || 'unknown'}:${text}`, 32);
+  const resultPath = path.join(root, 'results', `${digest}.json`);
+  fs.mkdirSync(path.dirname(resultPath), { recursive: true, mode: 0o700 });
+  if (!fs.existsSync(resultPath)) {
+    fs.writeFileSync(resultPath, JSON.stringify({ tool_call_id: toolCallId || null, result: redactRawContent(text) }), { encoding: 'utf8', mode: 0o600 });
+  }
+  return { result: redactRawContent(text.slice(0, 250_000)), result_ref: path.relative(root, resultPath), truncated: true };
+}
+
 function taskById(state, taskId) {
   if (!taskId) return null;
   return state.tasks?.[taskId]
@@ -517,11 +586,20 @@ function appendEvent(root, state, context, eventType, payload, overrides = {}) {
     event_id: newId('evt'),
     event_type: eventType,
     timestamp,
+    recorded_at: new Date().toISOString(),
     session_sequence: session.sequence,
     developer_id: context.developer_id,
     session_id: sessionId || null,
     task_id: overrides.task_id === undefined ? context.task_id : overrides.task_id,
     interaction_id: overrides.interaction_id === undefined ? context.interaction_id : overrides.interaction_id,
+    source_message_id: context.source_message_id,
+    source_response_id: context.source_response_id,
+    source_event_id: context.source_event_id,
+    source_turn_id: context.source_turn_id,
+    source_parent_id: context.source_parent_id,
+    source_agent_id: context.source_agent_id,
+    capture_status: payload?.capture_status || 'captured',
+    task_id_source: context.task_id_source,
     platform: context.platform,
     environment: context.environment,
     payload
@@ -654,6 +732,8 @@ function promptMetadata(prompt) {
     contains_constraints: /\b(?:must|should|do not|don't|without|compatible|keep|avoid|only|limit|required|out of scope)\b/i.test(value),
     contains_validation_request: /\b(?:test|tests|pytest|npm test|build|lint|typecheck|validate|check|verify|run)\b/i.test(value)
   };
+  metadata.capture_status = captureRawContent() ? 'captured' : 'unavailable_from_source';
+  metadata.content_capture_status = contentCaptureStatus(prompt);
   if (captureRawContent()) metadata.raw_prompt = redactRawContent(value);
   return metadata;
 }
@@ -1028,14 +1108,47 @@ function findUsage(value, depth = 0) {
   const usage = {
     input_tokens: number('input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens'),
     cached_input_tokens: number('cached_input_tokens', 'cachedInputTokens', 'cache_read_input_tokens', 'cacheReadInputTokens'),
+    cache_write_input_tokens: number('cache_write_input_tokens', 'cacheWriteInputTokens', 'cache_creation_input_tokens'),
     output_tokens: number('output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens'),
     reasoning_tokens: number('reasoning_tokens', 'reasoningTokens'),
+    total_tokens: number('total_tokens', 'totalTokens'),
     ai_credits: number('ai_credits', 'aiCredits'),
     estimated_cost: null
   };
   if (Object.entries(usage).some(([key, item]) => key !== 'estimated_cost' && item !== null)) return usage;
   for (const child of Object.values(value)) {
     const nested = findUsage(child, depth + 1);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function normalizeProviderUsage(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const readNumber = (...keys) => {
+    for (const key of keys) {
+      if (typeof value[key] === 'number' && Number.isFinite(value[key]) && value[key] >= 0) return value[key];
+    }
+    return undefined;
+  };
+  const usage = {};
+  const inputTokens = readNumber('inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens');
+  const outputTokens = readNumber('outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens');
+  const cachedInputTokens = readNumber('cachedInputTokens', 'cached_input_tokens', 'cacheReadInputTokens', 'cache_read_input_tokens');
+  const totalTokens = readNumber('totalTokens', 'total_tokens', 'totalTokenCount', 'total_token_count');
+  if (inputTokens !== undefined) usage.inputTokens = inputTokens;
+  if (outputTokens !== undefined) usage.outputTokens = outputTokens;
+  if (cachedInputTokens !== undefined) usage.cachedInputTokens = cachedInputTokens;
+  if (totalTokens !== undefined) usage.totalTokens = totalTokens;
+  return Object.keys(usage).length ? usage : null;
+}
+
+function findProviderUsage(value, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 5) return null;
+  const usage = normalizeProviderUsage(value);
+  if (usage) return usage;
+  for (const child of Object.values(value)) {
+    const nested = findProviderUsage(child, depth + 1);
     if (nested) return nested;
   }
   return null;
@@ -1061,14 +1174,19 @@ function resultText(value) {
 
 function toolSucceeded(eventName, result) {
   if (/Failure/i.test(eventName)) return false;
-  if (!result || typeof result !== 'object') return true;
+  if (typeof result === 'string') {
+    try { return toolSucceeded(eventName, JSON.parse(result)); } catch { return null; }
+  }
+  if (!result || typeof result !== 'object') return null;
   const exitCode = getValue(result, 'exit_code', 'exitCode', 'statusCode');
   if (typeof exitCode === 'number') return exitCode === 0;
   const explicit = getValue(result, 'success', 'ok');
   if (typeof explicit === 'boolean') return explicit;
-  if (result.isError === true) return false;
+  if (typeof result.isError === 'boolean') return !result.isError;
+  if (['failed', 'error', 'cancelled', 'canceled'].includes(result.status)) return false;
+  if (['success', 'succeeded'].includes(result.status)) return true;
   if (result.result && typeof result.result === 'object') return toolSucceeded(eventName, result.result);
-  return true;
+  return null;
 }
 
 function parseTestResult(text, success, duration, command = '') {
@@ -1156,10 +1274,43 @@ function handleEngineeringActivity(state, context, emit, toolName, toolInput, to
   const normalized = normalizeToolName(toolName);
   const command = extractCommand(toolInput);
   const operation = operationFor(normalized, command);
-  const duration = durationFrom(payload);
-  emit('tool_activity', { tool_type: toolType(normalized), operation, success, duration_ms: duration });
-
   const session = sessionState(state, context.session_id);
+  const toolCallId = sourceIdentifier(payload, 'tool_call_id', 'toolCallId', 'tool_use_id', 'toolUseId');
+  const pendingKey = JSON.stringify([context.source_turn_id, context.source_agent_id, toolCallId]);
+  const pending = toolCallId ? session.pending_tool_starts?.[pendingKey] : null;
+  const explicitStart = sourceIdentifier(payload, 'started_at', 'startedAt');
+  const explicitEnd = sourceIdentifier(payload, 'ended_at', 'endedAt');
+  const startedAt = explicitStart || pending?.timestamp || null;
+  const endedAt = explicitEnd || context.timestamp;
+  const elapsed = startedAt ? Date.parse(endedAt) - Date.parse(startedAt) : NaN;
+  const duration = durationFrom(payload) ?? (Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : null);
+  if (pending) delete session.pending_tool_starts[pendingKey];
+  const rawEnabled = captureRawContent();
+  const storedResult = rawEnabled
+    ? persistToolResult(telemetryRoot(context.workspace), toolCallId, toolResult)
+    : { result: undefined, result_ref: null, truncated: false };
+  emit('tool_activity', {
+    tool_name: toolName || null,
+    tool_call_id: toolCallId,
+    arguments: rawEnabled ? redact(toolInput) : undefined,
+    command: rawEnabled && command ? redactRawContent(command) : undefined,
+    started_at: startedAt,
+    ended_at: endedAt,
+    timing_source: explicitStart || explicitEnd || durationFrom(payload) !== null ? 'source' : pending ? 'hook_observations' : 'end_observation_only',
+    result: storedResult.result,
+    result_ref: storedResult.result_ref,
+    error: rawEnabled && success === false ? redact(getValue(payload, 'error')) || storedResult.result : null,
+    exit_code: getValue(unwrapToolResult(toolResult), 'exit_code', 'exitCode', 'statusCode') ?? null,
+    truncated: storedResult.truncated,
+    tool_type: toolType(normalized),
+    operation,
+    success,
+    duration_ms: duration,
+    capture_status: captureStatus(toolResult, { truncated: storedResult.truncated }),
+    content_capture_status: contentCaptureStatus(toolResult, { truncated: storedResult.truncated })
+  });
+
+  const pendingFileSnapshots = session.pending_file_snapshots || {};
   const active = taskById(state, context.task_id);
   if (session.activity) {
     session.activity.tools_invoked = (session.activity.tools_invoked || 0) + 1;
@@ -1195,11 +1346,18 @@ function handleEngineeringActivity(state, context, emit, toolName, toolInput, to
       const fileHash = normalizedPath ? `file_${privateHash(state.privacy_salt, normalizedPath)}` : null;
       emit('file_activity', {
         operation: candidate.operation || (/delete/.test(normalized) ? 'deleted' : /create|write/.test(normalized) ? 'created' : 'modified'),
+        path: rawEnabled ? workspaceRelativePath(context.workspace, normalizedPath) : undefined,
+        path_scope: workspaceRelativePath(context.workspace, normalizedPath) ? 'workspace' : 'external',
         file_hash: fileHash,
+        before_hash: rawEnabled ? pendingFileSnapshots[normalizedPath]?.before_hash || null : null,
+        after_hash: rawEnabled ? fileSnapshot(context.workspace, normalizedPath)?.before_hash || null : null,
+        diff_ref: toolCallId ? `tool:${toolCallId}` : null,
+        source_tool_call_id: toolCallId,
         file_extension: extension,
         lines_added: null,
         lines_removed: null
       });
+      delete pendingFileSnapshots[normalizedPath];
       if (session.activity && success) {
         session.activity.file_hashes ||= [];
         if (!fileHash || !session.activity.file_hashes.includes(fileHash)) {
@@ -1225,7 +1383,7 @@ function handleEngineeringActivity(state, context, emit, toolName, toolInput, to
   }
   if (BUILD_COMMAND.test(command)) {
     const errorCount = (text.match(/(?:^|\s)error(?:\s|:|\[)/gi) || []).length;
-    const buildResult = success ? 'passed' : 'failed';
+    const buildResult = success === null ? 'unknown' : success ? 'passed' : 'failed';
     emit('build_run', { result: buildResult, duration_ms: duration, error_count: errorCount || (success ? 0 : null) });
     if (active) {
       if (active.last_build_failed === true && buildResult === 'passed' && session.activity
@@ -1353,6 +1511,13 @@ function captureHookEvent(payload, options = {}) {
       session_id: sessionId,
       task_id: taskForSession(state, sessionId)?.task_id || state.active_task?.task_id || null,
       interaction_id: session.current_interaction_id,
+      source_message_id: sourceIdentifier(payload, 'source_message_id', 'sourceMessageId', 'message_id', 'messageId'),
+      source_response_id: sourceIdentifier(payload, 'source_response_id', 'sourceResponseId', 'response_id', 'responseId'),
+      source_event_id: sourceIdentifier(payload, 'source_event_id', 'sourceEventId', 'event_id', 'eventId', 'hook_event_id', 'hookEventId'),
+      source_turn_id: sourceIdentifier(payload, 'turn_id', 'turnId'),
+      source_parent_id: sourceIdentifier(payload, 'parent_id', 'parentId', 'parent_message_id', 'parentMessageId'),
+      source_agent_id: sourceIdentifier(payload, 'agent_id', 'agentId', 'subagent_id', 'subagentId'),
+      task_id_source: getValue(payload, 'task_id', 'taskId') ? 'source' : 'derived',
       developer_id: developerId(state),
       platform: options.platform || 'unknown',
       thresholds: options.thresholds || null,
@@ -1369,6 +1534,15 @@ function captureHookEvent(payload, options = {}) {
       if (record) emitted.push(record);
       return record;
     };
+
+    if (!state.recorder_started_at) {
+      state.recorder_started_at = new Date().toISOString();
+      emit('recorder_started', {
+        recorder_version: TELEMETRY_SCHEMA_VERSION,
+        capture_level: level,
+        capture_raw_content: captureRawContent()
+      }, { task_id: null, interaction_id: null });
+    }
 
     session.context_tokens_estimate += contextContribution(eventName, payload);
 
@@ -1390,6 +1564,7 @@ function captureHookEvent(payload, options = {}) {
       context.interaction_id = session.current_interaction_id;
       const taskMatch = taskContext(state, prompt, sessionId, context, emit);
       context.task_id = taskMatch.task.task_id;
+      context.task_id_source = getValue(payload, 'task_id', 'taskId') ? 'source' : 'derived';
       const materialRequest = materialRequestMetadata(prompt, taskMatch.followup, taskMatch.is_new);
       if (taskMatch.session_changed) {
         applyAcceptedRecommendation(state, context, emit, 'start_fresh_session', {
@@ -1463,6 +1638,19 @@ function captureHookEvent(payload, options = {}) {
       applyAcceptedRecommendation(state, context, emit, 'enhance_prompt', {
         transformation_observed: true
       });
+    } else if (/^(?:PreToolUse|preToolUse)$/.test(eventName)) {
+      context.task_id = taskForSession(state, sessionId)?.task_id || context.task_id;
+      context.interaction_id = session.current_interaction_id;
+      const toolInput = getValue(payload, 'tool_input', 'toolArgs') || {};
+      const toolCallId = sourceIdentifier(payload, 'tool_call_id', 'toolCallId', 'tool_use_id', 'toolUseId');
+      session.pending_tool_starts ||= {};
+      if (toolCallId) session.pending_tool_starts[JSON.stringify([context.source_turn_id, context.source_agent_id, toolCallId])] = { timestamp };
+      session.pending_file_snapshots ||= {};
+      for (const candidate of captureRawContent() ? fileCandidates(toolInput) : []) {
+        const normalizedPath = candidate.path ? path.normalize(candidate.path) : '';
+        const snapshot = fileSnapshot(context.workspace, normalizedPath);
+        if (snapshot) session.pending_file_snapshots[normalizedPath] = { ...snapshot, tool_call_id: toolCallId };
+      }
     } else if (/^(?:PostToolUse|postToolUse|PostToolUseFailure|postToolUseFailure)$/.test(eventName)) {
       context.task_id = taskForSession(state, sessionId)?.task_id || context.task_id;
       context.interaction_id = session.current_interaction_id;
@@ -1476,6 +1664,14 @@ function captureHookEvent(payload, options = {}) {
       handlePreflightTool(state, context, emit, toolName, toolResult);
       handleRecommendationDecision(state, context, emit, toolName, toolInput);
       handleEngineeringActivity(state, context, emit, toolName, toolInput, rawResult, success, payload);
+      if (success === false) {
+        emit('interaction_failed', {
+          source_event_id: context.source_event_id,
+          tool_call_id: sourceIdentifier(payload, 'tool_call_id', 'toolCallId', 'tool_use_id', 'toolUseId'),
+          error: captureRawContent() ? redact(getValue(payload, 'error')) || resultText(redact(rawResult)) : undefined,
+          capture_status: captureStatus(getValue(payload, 'error'))
+        });
+      }
       if (/curate_context|curatecontext|contextcurator/.test(normalizeToolName(toolName)) && toolResult) {
         const source = toolResult.sourceContextTokensEstimate ?? session.context_tokens_estimate;
         const handoff = toolResult.handoffTokensEstimate ?? null;
@@ -1525,7 +1721,12 @@ function captureHookEvent(payload, options = {}) {
           const relativePath = asString(file.path);
           emit('file_activity', {
             operation: file.change === 'added' ? 'created' : file.change === 'deleted' ? 'deleted' : 'modified',
+            path: captureRawContent() ? workspaceRelativePath(context.workspace, relativePath) : undefined,
             file_hash: relativePath ? `file_${privateHash(state.privacy_salt, path.normalize(relativePath))}` : null,
+            before_hash: null,
+            after_hash: captureRawContent() ? fileSnapshot(context.workspace, relativePath)?.before_hash || null : null,
+            diff_ref: null,
+            source_tool_call_id: null,
             file_extension: relativePath ? path.extname(relativePath).toLowerCase() || null : null,
             lines_added: typeof file.linesAdded === 'number' ? file.linesAdded : null,
             lines_removed: typeof file.linesDeleted === 'number' ? file.linesDeleted : null,
@@ -1541,6 +1742,11 @@ function captureHookEvent(payload, options = {}) {
       const ended = new Date(timestamp).getTime();
       const rawResponse = getValue(payload, 'last_assistant_message', 'response');
       emit('agent_response', {
+        raw_response: captureRawContent() && rawResponse !== undefined
+          ? redactRawContent(String(rawResponse)) : undefined,
+        response_status: getValue(payload, 'response_status', 'responseStatus', 'status') || 'completed',
+        finish_reason: getValue(payload, 'finish_reason', 'finishReason') || null,
+        source_response_id: sourceIdentifier(payload, 'source_response_id', 'sourceResponseId', 'response_id', 'responseId'),
         response_tokens: (() => {
           return rawResponse ? Math.ceil(Array.from(String(rawResponse)).length / 4) : null;
         })(),
@@ -1550,11 +1756,22 @@ function captureHookEvent(payload, options = {}) {
         files_modified: typeof outcomeMetrics?.filesChanged === 'number'
           ? outcomeMetrics.filesChanged
           : session.activity?.files_modified ?? null,
-        execution_duration_ms: Number.isFinite(started) && Number.isFinite(ended) ? Math.max(0, ended - started) : null
+        execution_duration_ms: Number.isFinite(started) && Number.isFinite(ended) ? Math.max(0, ended - started) : null,
+        token_usage: findProviderUsage(payload.usage || payload.token_usage || payload.providerUsage),
+        generated_files: captureRawContent() ? redact(outcomeMetrics?.changedFiles || []) : undefined,
+        capture_status: captureStatus(rawResponse),
+        content_capture_status: contentCaptureStatus(rawResponse)
+      });
+      emit('response_completed', {
+        source_response_id: sourceIdentifier(payload, 'source_response_id', 'sourceResponseId', 'response_id', 'responseId'),
+        response_status: getValue(payload, 'response_status', 'responseStatus', 'status') || 'completed',
+        finish_reason: getValue(payload, 'finish_reason', 'finishReason') || null
       });
       observeImplementationAttempt(state, context, emit, session, Boolean(rawResponse));
       emit('context_snapshot', contextSnapshotPayload(session, 'after_agent_response'));
       session.activity = null;
+    } else if (/^(?:Interrupt|interrupt)$/.test(eventName)) {
+      emit('interaction_cancelled', { reason: getValue(payload, 'reason') || null, source_event_id: context.source_event_id });
     } else if (/^(?:SessionEnd|sessionEnd)$/.test(eventName)) {
       const active = taskForSession(state, sessionId);
       if (active && active.last_session_id === sessionId && active.state === 'active') {
@@ -1562,13 +1779,27 @@ function captureHookEvent(payload, options = {}) {
         emit('task_state_changed', { from: 'active', to: 'paused', reason: 'session_ended' }, { interaction_id: null });
         active.state = 'paused';
       }
+      emit('session_ended', {
+        reason: getValue(payload, 'reason', 'end_reason', 'endReason') || null,
+        source_event_id: context.source_event_id
+      }, { interaction_id: null });
+      emit('recorder_stopped', {
+        reason: 'session_ended',
+        source_event_id: context.source_event_id,
+        capture_status: 'captured'
+      }, { task_id: null, interaction_id: null });
     }
 
-    const usage = findUsage(payload);
+    // Only provider-owned usage envelopes are evidence; tool bodies may contain arbitrary numbers.
+    const usage = findUsage(payload.usage || payload.token_usage || payload.providerUsage);
     if (usage) {
       context.task_id = taskForSession(state, sessionId)?.task_id || context.task_id;
       context.interaction_id = session.current_interaction_id;
-      emit('ai_usage', { model: getValue(payload, 'model') || session.model || null, ...usage });
+      emit('ai_usage', { model: getValue(payload, 'model') || session.model || null, ...usage,
+        source_request_id: sourceIdentifier(payload, 'request_id', 'requestId', 'response_id', 'responseId'),
+        usage_scope: getValue(payload, 'usage_scope', 'usageScope') || 'unspecified',
+        usage_source: 'hook_provider_envelope'
+      });
     }
 
     saveState(root, state);
@@ -1727,7 +1958,7 @@ function aggregateTask(events, taskId) {
   const legacyHumanRetryInteractionsSet = legacyHumanRetryInteractions(taskEvents, humanRetryInteractions);
   const allHumanRetryInteractions = new Set([...humanRetryInteractions, ...legacyHumanRetryInteractionsSet]);
   const materialAttempts = taskEvents.filter((event) => event.event_type === 'implementation_attempt_observed');
-  const exactHumanRetryDetectorAvailable = taskEvents.some((event) => event.schema_version === '1.1');
+  const exactHumanRetryDetectorAvailable = taskEvents.some((event) => ['1.1', '1.2'].includes(event.schema_version));
   const includesLegacyHumanRetryCapture = taskEvents.some((event) => event.schema_version === '1.0');
   const appliedTypes = new Set(recommendationsApplied.filter((event) => event.payload.application_status === 'applied')
     .map((event) => event.payload.recommendation_type));

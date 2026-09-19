@@ -66,3 +66,7 @@ export function getCodeBuddyPolicy(scope?: vscode.ConfigurationScope): CodeBuddy
     : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   return loadProjectPolicy(workspacePath, legacyPolicy).policy;
 }
+
+export function isLegacyGovernanceEnabled(scope?: vscode.ConfigurationScope): boolean {
+  return vscode.workspace.getConfiguration('tokenLens', scope).get<boolean>('legacyGovernance.enabled', false);
+}

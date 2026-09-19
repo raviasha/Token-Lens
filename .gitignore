@@ -7,5 +7,6 @@ dist/
 .code-buddy/telemetry/
 .worktrees/
 .vscode/
+.github/hooks/token-lens.json
 *.log
 *.vsix

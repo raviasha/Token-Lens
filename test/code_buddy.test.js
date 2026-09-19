@@ -20,6 +20,7 @@ function runHook(payload, environment) {
     encoding: 'utf8',
     env: {
       ...process.env,
+      CODE_BUDDY_LEGACY_GOVERNANCE: 'true',
       TOKEN_LENS_REDACT_SENSITIVE: 'true',
       TOKEN_LENS_CAPTURE_TRANSCRIPTS: 'true',
       ...environment

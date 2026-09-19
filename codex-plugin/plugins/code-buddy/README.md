@@ -1,5 +1,19 @@
 # Code Buddy for Codex
 
+> **Capture-only transition:** Legacy prompt review, decomposition, context-pressure
+> advice, fresh-task/handoff gates, retry recommendations and automatic report
+> refreshes are now disabled by default. Raw lifecycle, transcript, usage and
+> worktree evidence collection continues. Existing Markdown reports are preserved.
+> On-demand Task Cards are available through local MCP tools and a UI resource.
+> The governance sections below
+> describe the retained legacy implementation, not the active default workflow.
+>
+> For legacy regression testing only, set `CODE_BUDDY_LEGACY_GOVERNANCE=true`.
+> VS Code uses `tokenLens.legacyGovernance.enabled` (default `false`); reload
+> the window and reinstall Copilot hooks after changes. Codex requires plugin
+> reinstallation and a new task/restart to load the updated skill and tools.
+
+
 This is the development copy. For public installation, use the [Code Buddy
 distribution repository](https://github.com/raviasha/Code_Buddy).
 

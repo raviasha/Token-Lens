@@ -20,6 +20,55 @@ from pathlib import Path
 from typing import Any
 from project_policy import create_project_policy, load_project_policy
 
+CARD_RESOURCE = "ui://code-buddy/task-card.html"
+CARD_CLI = Path(__file__).resolve().parent.parent / "task-cards" / "cli.cjs"
+
+
+def card_cli(command: str, arguments: dict[str, Any], *extra: str) -> Any:
+    workspace = workspace_path(arguments)
+    result = subprocess.run(["node", str(CARD_CLI), command, str(workspace), *extra], capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 0:
+        raise ValueError(result.stderr.strip() or "Task Card command failed")
+    return json.loads(result.stdout)
+
+
+def task_card_sessions(arguments: dict[str, Any]) -> Any:
+    return card_cli("sessions", arguments)
+
+
+def task_card_open(arguments: dict[str, Any]) -> dict[str, Any]:
+    card_id = as_string(arguments.get("cardId"))
+    if not card_id:
+        scope = arguments.get("scope")
+        if not isinstance(scope, dict):
+            return {"workspace": str(workspace_path(arguments)), "cards": card_cli("cards", arguments), "sessions": card_cli("sessions", arguments), "card": None}
+        created = card_cli("create", arguments, json.dumps(scope))
+        card_id = created["id"]
+    card = card_cli("load", arguments, card_id)
+    return {"workspace": str(workspace_path(arguments)), "cardId": card_id, "card": card}
+
+
+def task_card_prepare(arguments: dict[str, Any]) -> dict[str, Any]:
+    card_id = as_string(arguments.get("cardId"))
+    card = card_cli("load", arguments, card_id)
+    prompt = card_cli("prompt", arguments, card_id, str(card["revision"]))
+    return {"cardId": card_id, "expectedRevision": card["revision"], "generationPrompt": prompt}
+
+
+def task_card_evidence(arguments: dict[str, Any]) -> Any:
+    return card_cli("evidence-card", arguments, as_string(arguments.get("cardId")), str(arguments.get("offset", 0)), str(arguments.get("limit", 200)))
+
+
+def task_card_save(arguments: dict[str, Any]) -> Any:
+    draft = as_string(arguments.get("draftPath"))
+    if not draft:
+        raise ValueError("draftPath is required")
+    return card_cli("save", arguments, as_string(arguments.get("cardId")), str(arguments.get("expectedRevision", 0)), draft)
+
+
+def task_card_correct(arguments: dict[str, Any]) -> Any:
+    return card_cli("correct", arguments, as_string(arguments.get("cardId")), as_string(arguments.get("claimId")), as_string(arguments.get("text")))
+
 
 SERVER_NAME = "code-buddy"
 SERVER_VERSION = "0.8.2"
@@ -33,7 +82,7 @@ SECRET_PATTERNS = [
     re.compile(r"(?:token|secret|password|passwd|api[_-]?key|authorization|cookie|credential)\s*[:=]\s*[^\s,;]+", re.I),
     re.compile(r"bearer\s+[a-z0-9._~+/=-]+", re.I),
     re.compile(r"(?:ghp|gho|ghu|ghs|ghr|github_pat)_[a-z0-9_]+", re.I),
-    re.compile(r"sk-[a-z0-9_-]+", re.I),
+    re.compile(r"(?<![a-z0-9_-])sk-[a-z0-9_-]+", re.I),
     re.compile(r"AKIA[0-9A-Z]{16}"),
 ]
 ACTION_RE = re.compile(r"\b(add|build|change|configure|create|debug|delete|deploy|design|document|explain|fix|implement|improve|install|investigate|migrate|optimi[sz]e|refactor|remove|review|rewrite|test|update|write)\b", re.I)
@@ -638,9 +687,14 @@ def session_status(arguments: dict[str, Any]) -> dict[str, Any]:
         pass
     raw_files = sorted((telemetry_root / "raw").glob("events-*.jsonl")) if (telemetry_root / "raw").exists() else []
     active_task = telemetry_state.get("active_task") if isinstance(telemetry_state.get("active_task"), dict) else {}
+    if session_id:
+        sessions = telemetry_state.get("sessions") or {}
+        active_task = sessions.get(session_id, {}) if isinstance(sessions, dict) else {}
+
     result = {
         "workspace": str(workspace),
         "sessionId": session_id or None,
+        "mode": "legacy_governance" if os.environ.get("CODE_BUDDY_LEGACY_GOVERNANCE") == "true" else "capture_only",
         "sessionLog": str(log_path),
         "interventionLog": str(intervention_path),
         "feedbackReport": str(workspace / "Code Buddy.md"),
@@ -648,7 +702,7 @@ def session_status(arguments: dict[str, Any]) -> dict[str, Any]:
         "stateDirectory": str(state_path / ".state"),
         "telemetryRoot": str(telemetry_root),
         "telemetryRawDirectory": str(telemetry_root / "raw"),
-        "telemetrySchemaVersion": "1.1",
+        "telemetrySchemaVersion": "1.2",
         "telemetryRawFileCount": len(raw_files),
         "telemetryTaskCount": len(telemetry_state.get("tasks") or {}),
         "activeTaskId": active_task.get("task_id"),
@@ -726,6 +780,16 @@ TOOLS = [
     tool("record_intervention", "Record the developer's explicit choice or a controlled fallback in the local intervention log.", ["workspace", "eventType", "data"], {"workspace": WORKSPACE, "sessionId": SESSION, "taskId": {"type": "string"}, "eventType": {"type": "string"}, "data": {"type": "object"}}),
 ]
 
+CARD_TOOLS = [
+    tool("task_card_sessions", "List locally captured sessions for developer-selected task-card scope.", ["workspace"], {"workspace": WORKSPACE}, True),
+    tool("task_card_open", "Open the local Task Card widget. Supply cardId to restore an existing card, scope to create one, or neither to list choices. Opening never calls a model.", ["workspace"], {"workspace": WORKSPACE, "cardId": {"type": "string"}, "scope": {"type": "object"}}),
+    tool("task_card_prepare", "Freeze selected evidence and prepare a generation request for this active Codex conversation after the developer clicks Generate/Update.", ["workspace", "cardId"], {"workspace": WORKSPACE, "cardId": {"type": "string"}}),
+    tool("task_card_evidence", "Read a page of selected task-card evidence; continue until nextOffset is null.", ["workspace", "cardId"], {"workspace": WORKSPACE, "cardId": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, True),
+    tool("task_card_save", "Validate and save an agent-authored task card revision from a local JSON draft path.", ["workspace", "cardId", "expectedRevision", "draftPath"], {"workspace": WORKSPACE, "cardId": {"type": "string"}, "expectedRevision": {"type": "integer"}, "draftPath": {"type": "string"}}),
+    tool("task_card_correct", "Append a developer correction to a card claim.", ["workspace", "cardId", "claimId", "text"], {"workspace": WORKSPACE, "cardId": {"type": "string"}, "claimId": {"type": "string"}, "text": {"type": "string"}}),
+]
+CARD_TOOLS[1]["_meta"] = {"ui": {"resourceUri": CARD_RESOURCE}}
+
 
 HANDLERS = {
     "review_prompt": review_prompt,
@@ -737,6 +801,14 @@ HANDLERS = {
     "analyze_human_retries": analyze_human_retries,
     "create_project_config": create_project_config,
     "record_intervention": record_intervention,
+}
+CARD_HANDLERS = {
+    "task_card_sessions": task_card_sessions,
+    "task_card_open": task_card_open,
+    "task_card_prepare": task_card_prepare,
+    "task_card_evidence": task_card_evidence,
+    "task_card_save": task_card_save,
+    "task_card_correct": task_card_correct,
 }
 
 
@@ -750,6 +822,7 @@ def result_message(identifier: Any, result: Any = None, error: dict[str, Any] | 
 
 
 def handle(message: dict[str, Any]) -> dict[str, Any] | None:
+    legacy_enabled = os.environ.get("CODE_BUDDY_LEGACY_GOVERNANCE") == "true"
     method = message.get("method")
     identifier = message.get("id")
     params = message.get("params") if isinstance(message.get("params"), dict) else {}
@@ -758,18 +831,28 @@ def handle(message: dict[str, Any]) -> dict[str, Any] | None:
     if method == "initialize":
         return result_message(identifier, {
             "protocolVersion": params.get("protocolVersion", "2025-06-18"),
-            "capabilities": {"tools": {"listChanged": False}},
+            "capabilities": {"tools": {"listChanged": False}, "resources": {"subscribe": False, "listChanged": False}},
             "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-            "instructions": "For each meaningful coding task, call review_prompt, decompose_task, measure_context, and assess_session_fit before implementation. Begin substantive work with the four-part Code Buddy health line, preserve the original option, ask before using any alternative or curation, and pass the absolute workspace path. Put every actionable choice in the normal user-visible response; never rely on tool output, hidden reasoning, or a collapsed Thinking section to show options.",
+            "instructions": ("Code Buddy is in capture-only mode. Legacy prompt review, decomposition, context advice and handoffs are disabled. Do not run preflight checks or generate legacy scores. Use session_status to inspect local capture paths." if not legacy_enabled else "For each meaningful coding task, call review_prompt, decompose_task, measure_context, and assess_session_fit before implementation. Begin substantive work with the four-part Code Buddy health line, preserve the original option, ask before using any alternative or curation, and pass the absolute workspace path. Put every actionable choice in the normal user-visible response; never rely on tool output, hidden reasoning, or a collapsed Thinking section to show options."),
         })
     if method == "ping":
         return result_message(identifier, {})
+    if method == "resources/list":
+        return result_message(identifier, {"resources": [{"uri": CARD_RESOURCE, "name": "Task Card", "mimeType": "text/html;profile=mcp-app"}]})
+    if method == "resources/read":
+        if params.get("uri") != CARD_RESOURCE:
+            return result_message(identifier, error={"code": -32602, "message": "Unknown Task Card resource"})
+        html = (CARD_CLI.parent / "view.html").read_text(encoding="utf-8")
+        return result_message(identifier, {"contents": [{"uri": CARD_RESOURCE, "mimeType": "text/html;profile=mcp-app", "text": html}]})
     if method == "tools/list":
-        return result_message(identifier, {"tools": TOOLS})
+        return result_message(identifier, {"tools": TOOLS + CARD_TOOLS if legacy_enabled else [item for item in TOOLS if item["name"] == "session_status"] + CARD_TOOLS})
     if method == "tools/call":
         name = params.get("name")
         arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
-        handler = HANDLERS.get(name)
+        if name in HANDLERS and name != "session_status" and not legacy_enabled:
+            output = {"status": "disabled", "reason": "Legacy governance is inactive; telemetry capture remains enabled."}
+            return result_message(identifier, {"content": [{"type": "text", "text": json.dumps(output)}], "structuredContent": output, "isError": False})
+        handler = HANDLERS.get(name) or CARD_HANDLERS.get(name)
         if handler is None:
             return result_message(identifier, error={"code": -32602, "message": f"Unknown Code Buddy tool: {name}"})
         try:

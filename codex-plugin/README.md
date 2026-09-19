@@ -1,10 +1,45 @@
 # Code Buddy for Codex
 
+> **Capture-only transition:** Legacy prompt review, decomposition, context-pressure
+> advice, fresh-task/handoff gates, retry recommendations and automatic report
+> refreshes are now disabled by default. Raw lifecycle, transcript, usage and
+> worktree evidence collection continues. Existing Markdown reports are preserved.
+> On-demand Task Cards are available through the plugin's local MCP tools and
+> UI resource. See [the implementation guide](../docs/task-card-implementation.md).
+> The governance sections below
+> describe the retained legacy implementation, not the active default workflow.
+>
+> For legacy regression testing only, set `CODE_BUDDY_LEGACY_GOVERNANCE=true`.
+> VS Code uses `tokenLens.legacyGovernance.enabled` (default `false`); reload
+> the window and reinstall Copilot hooks after changes. Codex requires plugin
+> reinstallation and a new task/restart to load the updated skill and tools.
+
+
 This directory contains the development source for the Code Buddy Codex
 plugin, including its lifecycle hooks, MCP server, tests, and marketplace
 metadata. Users should install the runtime plugin from the public [Code Buddy
 distribution repository](https://github.com/raviasha/Code_Buddy), not from
 this Token Lens source checkout.
+
+## Instrumenting this development checkout
+
+For local development, install the plugin from this repository's marketplace:
+
+```bash
+codex plugin marketplace add /absolute/path/to/Token_Lens/codex-plugin
+codex plugin add code-buddy@token-lens
+```
+
+Restart Codex and start a new task in the Token Lens checkout so it loads the
+updated hooks, skill, and MCP tools. Review and trust hooks if Codex requests
+it. Reinstall after plugin changes; the installation is a cached snapshot.
+Avoid enabling another Code Buddy installation at the same time.
+
+The shared telemetry runtime includes schema 1.2 capture from the checked-in
+`code-buddy-0.10.2.vsix`, merged with native Codex context measurements. It
+reads existing 1.0, 1.1, and 1.2 events. Diagnostic raw-content opt-in applies
+to prompts, responses, tool arguments/results, and file paths; standard mode
+remains metadata-only. Large diagnostic results retain a redacted durable copy.
 
 ## Public installation
 

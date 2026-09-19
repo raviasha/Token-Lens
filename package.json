@@ -1,8 +1,8 @@
 {
   "name": "code-buddy",
   "displayName": "Code Buddy",
-  "description": "Capture GitHub Copilot agent sessions, replay task telemetry, and provide structured local coding feedback.",
-  "version": "0.9.0",
+  "description": "Capture local coding-agent conversation, tool, usage and outcome evidence.",
+  "version": "0.10.6",
   "publisher": "code-buddy",
   "license": "MIT",
   "repository": {
@@ -20,6 +20,7 @@
     "onCommand:tokenLens.installHooks",
     "onCommand:tokenLens.removeHooks",
     "onCommand:tokenLens.openLog",
+    "onCommand:tokenLens.openTaskCard",
     "onCommand:tokenLens.openCodeBuddy",
     "onCommand:tokenLens.openAnalytics",
     "onCommand:tokenLens.openHookConfig",
@@ -36,9 +37,54 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "tokenLens.createProjectConfig",
+          "when": "config.tokenLens.legacyGovernance.enabled"
+        },
+        {
+          "command": "tokenLens.openInterventions",
+          "when": "config.tokenLens.legacyGovernance.enabled"
+        },
+        {
+          "command": "tokenLens.replayTelemetryTask",
+          "when": "config.tokenLens.legacyGovernance.enabled"
+        },
+        {
+          "command": "tokenLens.openHumanRetryEvidence",
+          "when": "config.tokenLens.legacyGovernance.enabled"
+        },
+        {
+          "command": "tokenLens.reviewPrompt",
+          "when": "config.tokenLens.legacyGovernance.enabled"
+        },
+        {
+          "command": "tokenLens.decomposeTask",
+          "when": "config.tokenLens.legacyGovernance.enabled"
+        },
+        {
+          "command": "tokenLens.measureContext",
+          "when": "config.tokenLens.legacyGovernance.enabled"
+        },
+        {
+          "command": "tokenLens.curateContext",
+          "when": "config.tokenLens.legacyGovernance.enabled"
+        },
+        {
+          "command": "tokenLens.openCodeBuddy",
+          "when": "config.tokenLens.legacyGovernance.enabled"
+        },
+        {
+          "command": "tokenLens.openAnalytics",
+          "when": "config.tokenLens.legacyGovernance.enabled"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "tokenLens.createProjectConfig",
+        "enablement": "config.tokenLens.legacyGovernance.enabled",
         "title": "Code Buddy: Create or Open Project Configuration"
       },
       {
@@ -54,11 +100,17 @@
         "title": "Code Buddy: Open Session Log"
       },
       {
+        "command": "tokenLens.openTaskCard",
+        "title": "Code Buddy: Open Task Card"
+      },
+      {
         "command": "tokenLens.openCodeBuddy",
+        "enablement": "config.tokenLens.legacyGovernance.enabled",
         "title": "Code Buddy: Open Feedback"
       },
       {
         "command": "tokenLens.openAnalytics",
+        "enablement": "config.tokenLens.legacyGovernance.enabled",
         "title": "Code Buddy: Open Analytics"
       },
       {
@@ -71,6 +123,7 @@
       },
       {
         "command": "tokenLens.openInterventions",
+        "enablement": "config.tokenLens.legacyGovernance.enabled",
         "title": "Code Buddy: Open Intervention Log"
       },
       {
@@ -79,32 +132,39 @@
       },
       {
         "command": "tokenLens.replayTelemetryTask",
+        "enablement": "config.tokenLens.legacyGovernance.enabled",
         "title": "Code Buddy: Replay Task Telemetry"
       },
       {
         "command": "tokenLens.openHumanRetryEvidence",
+        "enablement": "config.tokenLens.legacyGovernance.enabled",
         "title": "Code Buddy: Open Human Retry Evidence"
       },
       {
         "command": "tokenLens.reviewPrompt",
+        "enablement": "config.tokenLens.legacyGovernance.enabled",
         "title": "Code Buddy: Review Prompt"
       },
       {
         "command": "tokenLens.decomposeTask",
+        "enablement": "config.tokenLens.legacyGovernance.enabled",
         "title": "Code Buddy: Decompose Task"
       },
       {
         "command": "tokenLens.measureContext",
+        "enablement": "config.tokenLens.legacyGovernance.enabled",
         "title": "Code Buddy: Measure Context"
       },
       {
         "command": "tokenLens.curateContext",
+        "enablement": "config.tokenLens.legacyGovernance.enabled",
         "title": "Code Buddy: Curate Context"
       }
     ],
     "languageModelTools": [
       {
         "name": "code-buddy_reviewPrompt",
+        "when": "config.tokenLens.legacyGovernance.enabled",
         "displayName": "Code Buddy Prompt Reviewer",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "codeBuddyPromptReviewer",
@@ -114,16 +174,34 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "prompt": { "type": "string", "description": "The developer's original coding prompt, unchanged." },
-            "sessionId": { "type": "string", "description": "Optional coding-agent session identifier." },
-            "taskId": { "type": "string", "description": "Optional task identifier." },
-            "relevantContext": { "type": "array", "items": { "type": "string" }, "description": "Only context already known to be relevant to the prompt." }
+            "prompt": {
+              "type": "string",
+              "description": "The developer's original coding prompt, unchanged."
+            },
+            "sessionId": {
+              "type": "string",
+              "description": "Optional coding-agent session identifier."
+            },
+            "taskId": {
+              "type": "string",
+              "description": "Optional task identifier."
+            },
+            "relevantContext": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Only context already known to be relevant to the prompt."
+            }
           },
-          "required": ["prompt"]
+          "required": [
+            "prompt"
+          ]
         }
       },
       {
         "name": "code-buddy_decomposeTask",
+        "when": "config.tokenLens.legacyGovernance.enabled",
         "displayName": "Code Buddy Task Decomposer",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "codeBuddyTaskDecomposer",
@@ -133,16 +211,31 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "task": { "type": "string", "description": "The developer's original coding task, unchanged." },
-            "sessionId": { "type": "string" },
-            "taskId": { "type": "string" },
-            "relevantContext": { "type": "array", "items": { "type": "string" } }
+            "task": {
+              "type": "string",
+              "description": "The developer's original coding task, unchanged."
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "taskId": {
+              "type": "string"
+            },
+            "relevantContext": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           },
-          "required": ["task"]
+          "required": [
+            "task"
+          ]
         }
       },
       {
         "name": "code-buddy_measureContext",
+        "when": "config.tokenLens.legacyGovernance.enabled",
         "displayName": "Code Buddy Context Measurement",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "codeBuddyContextMeasurement",
@@ -152,47 +245,128 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "sessionId": { "type": "string" },
-            "nativeMeasurement": { "$ref": "#/definitions/measurement" },
-            "visionMeasurement": { "$ref": "#/definitions/measurement" },
+            "sessionId": {
+              "type": "string"
+            },
+            "nativeMeasurement": {
+              "$ref": "#/definitions/measurement"
+            },
+            "visionMeasurement": {
+              "$ref": "#/definitions/measurement"
+            },
             "estimate": {
               "type": "object",
               "properties": {
-                "value": { "type": "number", "minimum": 0 },
-                "unit": { "enum": ["estimated_tokens"] },
-                "utilization": { "type": "number", "minimum": 0 },
-                "confidence": { "enum": ["high", "medium", "low"] },
-                "thresholdState": { "enum": ["normal", "warning", "critical"] },
-                "estimatorVersion": { "type": "string" }
+                "value": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "unit": {
+                  "enum": [
+                    "estimated_tokens"
+                  ]
+                },
+                "utilization": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "confidence": {
+                  "enum": [
+                    "high",
+                    "medium",
+                    "low"
+                  ]
+                },
+                "thresholdState": {
+                  "enum": [
+                    "normal",
+                    "warning",
+                    "critical"
+                  ]
+                },
+                "estimatorVersion": {
+                  "type": "string"
+                }
               },
-              "required": ["value", "unit", "confidence", "thresholdState"]
+              "required": [
+                "value",
+                "unit",
+                "confidence",
+                "thresholdState"
+              ]
             }
           },
           "definitions": {
             "measurement": {
               "type": "object",
               "properties": {
-                "value": { "type": "number", "minimum": 0 },
-                "unit": { "enum": ["tokens"] },
-                "confidence": { "enum": ["high", "medium", "low"] },
-                "providerId": { "type": "string" },
-                "capacityTokens": { "type": "number", "minimum": 1 },
-                "utilization": { "type": "number", "minimum": 0 },
-                "measurementTimestamp": { "type": "string" },
-                "cachedInputTokens": { "type": "number", "minimum": 0 },
-                "cacheWriteInputTokens": { "type": "number", "minimum": 0 },
-                "outputTokens": { "type": "number", "minimum": 0 },
-                "reasoningTokens": { "type": "number", "minimum": 0 },
-                "totalTokens": { "type": "number", "minimum": 0 },
-                "evidence": { "type": "string" }
+                "value": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "unit": {
+                  "enum": [
+                    "tokens"
+                  ]
+                },
+                "confidence": {
+                  "enum": [
+                    "high",
+                    "medium",
+                    "low"
+                  ]
+                },
+                "providerId": {
+                  "type": "string"
+                },
+                "capacityTokens": {
+                  "type": "number",
+                  "minimum": 1
+                },
+                "utilization": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "measurementTimestamp": {
+                  "type": "string"
+                },
+                "cachedInputTokens": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "cacheWriteInputTokens": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "outputTokens": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "reasoningTokens": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "totalTokens": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "evidence": {
+                  "type": "string"
+                }
               },
-              "required": ["value", "unit", "confidence", "providerId"]
+              "required": [
+                "value",
+                "unit",
+                "confidence",
+                "providerId"
+              ]
             }
           }
         }
       },
       {
         "name": "code-buddy_assessSessionFit",
+        "when": "config.tokenLens.legacyGovernance.enabled",
         "displayName": "Code Buddy Session Fit",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "codeBuddySessionFit",
@@ -202,17 +376,35 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "prompt": { "type": "string", "description": "The current developer prompt, unchanged." },
-            "previousPrompt": { "type": "string", "description": "The prior meaningful prompt when available." },
-            "sessionId": { "type": "string" },
-            "taskId": { "type": "string" },
-            "relevantContext": { "type": "array", "items": { "type": "string" } }
+            "prompt": {
+              "type": "string",
+              "description": "The current developer prompt, unchanged."
+            },
+            "previousPrompt": {
+              "type": "string",
+              "description": "The prior meaningful prompt when available."
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "taskId": {
+              "type": "string"
+            },
+            "relevantContext": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           },
-          "required": ["prompt"]
+          "required": [
+            "prompt"
+          ]
         }
       },
       {
         "name": "code-buddy_curateContext",
+        "when": "config.tokenLens.legacyGovernance.enabled",
         "displayName": "Code Buddy Context Curator",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "codeBuddyContextCurator",
@@ -222,28 +414,100 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "targetTask": { "type": "string" },
-            "mode": { "enum": ["fresh_task", "continue_current"] },
-            "sessionId": { "type": "string" },
-            "conversationHistory": { "type": "array", "items": { "type": "string" } },
-            "knownDecisions": { "type": "array", "items": { "type": "string" } },
-            "relevantFiles": { "type": "array", "items": { "type": "string" } },
-            "constraints": { "type": "array", "items": { "type": "string" } },
-            "implementationState": { "type": "array", "items": { "type": "string" } },
-            "completedWork": { "type": "array", "items": { "type": "string" } },
-            "remainingWork": { "type": "array", "items": { "type": "string" } },
-            "knownIssues": { "type": "array", "items": { "type": "string" } },
-            "validation": { "type": "array", "items": { "type": "string" } },
-            "openQuestions": { "type": "array", "items": { "type": "string" } },
-            "pinnedItems": { "type": "array", "items": { "type": "string" } }
+            "targetTask": {
+              "type": "string"
+            },
+            "mode": {
+              "enum": [
+                "fresh_task",
+                "continue_current"
+              ]
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "conversationHistory": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "knownDecisions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "relevantFiles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "constraints": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "implementationState": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "completedWork": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "remainingWork": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "knownIssues": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "validation": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "openQuestions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "pinnedItems": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           },
-          "required": ["targetTask", "mode"]
+          "required": [
+            "targetTask",
+            "mode"
+          ]
         }
       }
     ],
     "configuration": {
       "title": "Code Buddy",
       "properties": {
+        "tokenLens.legacyGovernance.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Re-enable the retired Code Buddy governance workflows. Disabled by default; raw telemetry capture stays active. Reload VS Code and reinstall hooks after changing this setting."
+        },
         "tokenLens.logFile": {
           "type": "string",
           "default": ".code-buddy/copilot-session.jsonl",
@@ -341,7 +605,11 @@
         },
         "tokenLens.telemetry.level": {
           "type": "string",
-          "enum": ["minimal", "standard", "diagnostic"],
+          "enum": [
+            "minimal",
+            "standard",
+            "diagnostic"
+          ],
           "default": "standard",
           "description": "Telemetry detail level. Standard stores interaction and outcome metadata without raw prompts, source, terminal output, or tool arguments."
         },
@@ -434,7 +702,7 @@
   "scripts": {
     "compile": "tsc -p tsconfig.json",
     "build": "npm run compile",
-    "test": "npm run build && node --test test/hook.test.js test/telemetry.test.js test/pending_handoff.test.js test/code_buddy.test.js test/rearchitecture.test.js test/project_policy.test.js test/governance.test.js test/documentation.test.js",
+    "test": "npm run build && node --test test/task_cards.test.js test/task_card_vscode.test.js test/capture_only.test.js test/hook.test.js test/telemetry.test.js test/pending_handoff.test.js test/code_buddy.test.js test/rearchitecture.test.js test/project_policy.test.js test/governance.test.js test/documentation.test.js",
     "watch": "tsc -p tsconfig.json --watch"
   },
   "devDependencies": {

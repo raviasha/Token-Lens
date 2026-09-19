@@ -87,6 +87,125 @@ function postTool(workspace, tool_name, tool_input, tool_response, timestamp, fa
   });
 }
 
+test('capture keeps unknown outcomes distinct and correlates tool timing by source call and turn', () => {
+  const { workspace, telemetry } = withTelemetryWorkspace();
+  hook(workspace, 'PreToolUse', { tool_call_id: 'a', turn_id: 'turn-a', timestamp: '2026-09-19T10:00:00Z' });
+  hook(workspace, 'PreToolUse', { tool_call_id: 'b', turn_id: 'turn-b', timestamp: '2026-09-19T10:00:01Z' });
+  hook(workspace, 'PostToolUse', { tool_call_id: 'a', turn_id: 'turn-a', parent_id: 'parent',
+    timestamp: '2026-09-19T10:00:03Z', tool_name: 'exec_command', tool_input: { cmd: 'npm run build' }, tool_response: 'no status supplied' });
+  hook(workspace, 'PostToolUse', { tool_call_id: 'b', turn_id: 'turn-b', timestamp: '2026-09-19T10:00:05Z',
+    tool_name: 'exec_command', tool_response: '{"exit_code":7}' });
+  hook(workspace, 'PostToolUse', { tool_call_id: 'unpaired', timestamp: '2026-09-19T10:00:06Z', tool_response: {} });
+  const { events, invalid } = readTelemetryEvents(telemetry);
+  assert.deepEqual(invalid, []);
+  const [a, b, unpaired] = events.filter(e => e.event_type === 'tool_activity');
+  assert.equal(a.payload.success, null);
+  assert.equal(a.payload.started_at, '2026-09-19T10:00:00.000Z');
+  assert.equal(a.payload.ended_at, '2026-09-19T10:00:03.000Z');
+  assert.equal(a.payload.duration_ms, 3000);
+  assert.equal(a.payload.timing_source, 'hook_observations');
+  assert.equal(a.source_turn_id, 'turn-a');
+  assert.equal(a.source_parent_id, 'parent');
+  assert.equal(b.payload.success, false);
+  assert.equal(b.payload.exit_code, 7);
+  assert.equal(b.payload.duration_ms, 4000);
+  assert.equal(unpaired.payload.started_at, null);
+  assert.equal(unpaired.payload.duration_ms, null);
+  assert.equal(events.find(e => e.event_type === 'build_run').payload.result, 'unknown');
+  assert.equal(events.filter(e => e.event_type === 'interaction_failed').length, 1);
+});
+
+test('usage is provider scoped and never mined from tool arguments or results', () => {
+  const { workspace, telemetry } = withTelemetryWorkspace();
+  hook(workspace, 'PostToolUse', { tool_call_id: 'usage-text', tool_input: { input_tokens: 900 }, tool_response: { output_tokens: 800 } });
+  hook(workspace, 'Stop', { response_id: 'r1', model: 'observed-model', usage: {
+    input_tokens: 100, output_tokens: 20, cached_input_tokens: 40, cache_write_input_tokens: 10, reasoning_tokens: 5, total_tokens: 120
+  } });
+  const usage = readTelemetryEvents(telemetry).events.filter(e => e.event_type === 'ai_usage');
+  assert.equal(usage.length, 1);
+  assert.equal(usage[0].payload.usage_scope, 'unspecified');
+  assert.equal(usage[0].payload.source_request_id, 'r1');
+  assert.equal(usage[0].payload.cache_write_input_tokens, 10);
+  assert.equal(usage[0].payload.total_tokens, 120);
+});
+
+test('content availability distinguishes disabled capture from missing and redacted source', () => {
+  const { workspace, telemetry } = withTelemetryWorkspace();
+  hook(workspace, 'Stop', { response_id: 'disabled', last_assistant_message: 'available but not captured' });
+  process.env.TOKEN_LENS_TELEMETRY_LEVEL = 'diagnostic';
+  process.env.TOKEN_LENS_TELEMETRY_CAPTURE_RAW_CONTENT = 'true';
+  hook(workspace, 'Stop', { response_id: 'absent' });
+  hook(workspace, 'Stop', { response_id: 'secret', last_assistant_message: 'password=private-value' });
+  const responses = readTelemetryEvents(telemetry).events.filter(e => e.event_type === 'agent_response');
+  assert.deepEqual(responses.map(e => e.payload.content_capture_status), ['disabled', 'unavailable_from_source', 'intentionally_redacted']);
+});
+
+test('Interrupt records cancellation without implying a response or task completed', () => {
+  const { workspace, telemetry } = withTelemetryWorkspace();
+  hook(workspace, 'Interrupt', { turn_id: 'interrupted-turn', reason: 'user_interrupt' });
+  const events = readTelemetryEvents(telemetry).events;
+  const cancelled = events.find(e => e.event_type === 'interaction_cancelled');
+  assert.ok(cancelled);
+  assert.equal(cancelled.source_turn_id, 'interrupted-turn');
+  assert.equal(events.some(e => ['task_completed', 'response_completed'].includes(e.event_type)), false);
+});
+
+test('diagnostic capture preserves response and tool evidence with source identifiers', () => {
+  const { workspace, telemetry } = withTelemetryWorkspace();
+  process.env.TOKEN_LENS_TELEMETRY_LEVEL = 'diagnostic';
+  process.env.TOKEN_LENS_TELEMETRY_CAPTURE_RAW_CONTENT = 'true';
+  hook(workspace, 'UserPromptSubmit', { prompt: 'Implement CSV export.', message_id: 'message-1' });
+  hook(workspace, 'PostToolUse', {
+    tool_name: 'exec_command', tool_call_id: 'call-1', event_id: 'event-1',
+    tool_input: { command: 'npm test', apiKey: 'private-key-marker' },
+    tool_response: { stdout: 'All tests passed', exit_code: 0, password: 'private-password-marker' }
+  });
+  hook(workspace, 'Stop', { last_assistant_message: 'CSV export is ready.', response_id: 'response-1' });
+  hook(workspace, 'SessionEnd', { reason: 'user_closed' });
+  const { events, invalid } = readTelemetryEvents(telemetry);
+  assert.deepEqual(invalid, []);
+  const tool = events.find(event => event.event_type === 'tool_activity');
+  assert.equal(tool.payload.tool_call_id, 'call-1');
+  assert.equal(tool.source_event_id, 'event-1');
+  assert.equal(tool.payload.arguments.command, 'npm test');
+  assert.match(tool.payload.result, /All tests passed/);
+  assert.equal(tool.payload.exit_code, 0);
+  assert.doesNotMatch(JSON.stringify(events), /private-(key|password)-marker/);
+  assert.ok(Date.parse(tool.recorded_at));
+  const response = events.find(event => event.event_type === 'agent_response');
+  assert.equal(response.payload.raw_response, 'CSV export is ready.');
+  assert.equal(response.source_response_id, 'response-1');
+  assert.ok(events.some(event => event.event_type === 'session_ended'));
+  assert.ok(events.some(event => event.event_type === 'recorder_started'));
+  const taskId = events.find(event => event.event_type === 'task_created').task_id;
+  assert.equal(aggregateTask(events, taskId).human_retry_observation_confidence, 1);
+});
+
+test('standard telemetry omits raw tool evidence and diagnostic result files', () => {
+  const { workspace, telemetry } = withTelemetryWorkspace();
+  hook(workspace, 'UserPromptSubmit', { prompt: 'Implement CSV export.' });
+  postTool(workspace, 'exec_command', { command: 'echo private-command-marker' },
+    { stdout: 'private-result-marker' + 'x'.repeat(260_000), exit_code: 1 });
+  hook(workspace, 'Stop', { last_assistant_message: 'private-response-marker' });
+  const serialized = JSON.stringify(readTelemetryEvents(telemetry).events);
+  assert.doesNotMatch(serialized, /private-(command|result|response)-marker/);
+  assert.equal(fs.existsSync(path.join(telemetry, 'results')), false);
+});
+
+test('diagnostic large tool results retain a durable complete redacted copy', () => {
+  const { workspace, telemetry } = withTelemetryWorkspace();
+  process.env.TOKEN_LENS_TELEMETRY_LEVEL = 'diagnostic';
+  process.env.TOKEN_LENS_TELEMETRY_CAPTURE_RAW_CONTENT = 'true';
+  hook(workspace, 'UserPromptSubmit', { prompt: 'Implement CSV export.' });
+  postTool(workspace, 'exec_command', { command: 'npm test' },
+    { stdout: 'x'.repeat(260_000) + 'end-of-result', apiKey: 'private-large-key' });
+  const event = readTelemetryEvents(telemetry).events.find(event => event.event_type === 'tool_activity');
+  assert.equal(event.payload.truncated, true);
+  const saved = fs.readFileSync(path.join(telemetry, event.payload.result_ref), 'utf8');
+  assert.match(saved, /end-of-result/);
+  assert.doesNotMatch(saved, /private-large-key/);
+});
+
 function syntheticTaskEvents(index, promptClarity, humanRetryCount, options = {}) {
   const taskId = options.taskId || `task_synthetic_${index}`;
   const sessionId = `session_synthetic_${index}`;
@@ -378,8 +497,7 @@ test('the installed Copilot hook writes the versioned task stream', () => {
     && event.platform === 'github-copilot'));
   assert.ok(events.some((event) => event.event_type === 'prompt_submitted'
     && event.interaction_id?.startsWith('interaction_')));
-  const output = JSON.parse(result.stdout);
-  assert.match(output.hookSpecificOutput.additionalContext, /Personalized recommendation — Not enough data/);
+  assert.equal(result.stdout, '', 'default capture does not inject governance advice');
 });
 
 test('counts one human retry only after a prior and subsequent material implementation attempt', () => {
@@ -806,7 +924,7 @@ test('minimal telemetry keeps lifecycle and preflight data but omits activity de
 
 test('telemetry validation rejects malformed events and capture fails open', () => {
   assert.match(validateTelemetryEvent({ schema_version: '0.1' }).join(' '), /schema_version/);
-  assert.deepEqual([...SUPPORTED_TELEMETRY_SCHEMA_VERSIONS], ['1.0', '1.1']);
+  assert.deepEqual([...SUPPORTED_TELEMETRY_SCHEMA_VERSIONS], ['1.0', '1.1', '1.2']);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-telemetry-fail-open-'));
   const blockedPath = path.join(directory, 'not-a-directory');
   fs.writeFileSync(blockedPath, 'file', 'utf8');
@@ -918,7 +1036,7 @@ test('VS Code and Codex runtime copies use the same telemetry implementation', (
 });
 
 test('published schema, audit, dictionary, and synthetic dataset stay usable', () => {
-  const schema = JSON.parse(fs.readFileSync(path.join(root, 'docs', 'telemetry-schema-v1.1.json'), 'utf8'));
+  const schema = JSON.parse(fs.readFileSync(path.join(root, 'docs', 'telemetry-schema-v1.2.json'), 'utf8'));
   assert.equal(schema.properties.schema_version.const, TELEMETRY_SCHEMA_VERSION);
   const legacySchema = JSON.parse(fs.readFileSync(path.join(root, 'docs', 'telemetry-schema-v1.json'), 'utf8'));
   assert.equal(legacySchema.properties.schema_version.const, '1.0');

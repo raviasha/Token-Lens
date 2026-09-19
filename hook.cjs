@@ -11,7 +11,7 @@ const secretPatterns = [
   /(?:token|secret|password|passwd|api[_-]?key|authorization|cookie|credential)\s*[:=]\s*[^\s,;]+/gi,
   /bearer\s+[a-z0-9._~+/=-]+/gi,
   /(?:ghp|gho|ghu|ghs|ghr|github_pat)_[a-z0-9_]+/gi,
-  /sk-[a-z0-9_-]+/gi,
+  /(?<![a-z0-9_-])sk-[a-z0-9_-]+/gi,
   /AKIA[0-9A-Z]{16}/g,
   /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g
 ];
@@ -70,6 +70,9 @@ function redactString(value) {
 }
 
 function redact(value, key) {
+  // Numeric provider counters are measurements, not credential values.
+  if (key && /^(?:input_tokens|output_tokens|cached_input_tokens|cache_write_input_tokens|cache_creation_input_tokens|reasoning_tokens|reasoning_output_tokens|total_tokens|inputTokens|outputTokens|cachedInputTokens|cacheWriteTokens|reasoningTokens|totalTokens)$/.test(key) && typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  if (key && /^(?:usage|token_usage|thread_token_usage|turn_token_usage|last_token_usage|total_token_usage)$/.test(key) && value && typeof value === 'object' && !Array.isArray(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redact(v, k)]));
   if (!shouldRedact()) {
     return value;
   }
@@ -1110,7 +1113,7 @@ function saveTranscriptState(logPath, sessionId, seenEventIds) {
   });
 }
 
-function appendTranscriptRecord(logPath, payload, sessionId, transcriptPath, transcriptEvent) {
+function appendTranscriptRecord(logPath, payload, sessionId, transcriptPath, transcriptEvent, sourceLine) {
   const eventType = typeof transcriptEvent.type === 'string' ? transcriptEvent.type : 'unknown';
   const sourceEventId = typeof transcriptEvent.id === 'string' && transcriptEvent.id
     ? transcriptEvent.id
@@ -1140,6 +1143,7 @@ function appendTranscriptRecord(logPath, payload, sessionId, transcriptPath, tra
     source: 'transcript',
     sourceEventType: eventType,
     sourceEventId,
+    sourceLine,
     sessionId,
     turnId: turnId === null ? null : String(turnId),
     parentId: transcriptEvent.parentId || null,
@@ -1147,7 +1151,7 @@ function appendTranscriptRecord(logPath, payload, sessionId, transcriptPath, tra
     localTimestamp: getLocalTimestamp(typeof transcriptEvent.timestamp === 'string' ? transcriptEvent.timestamp : null),
     recordedAt: getLocalTimestamp(),
     workspace: getWorkspace(payload),
-    model: getValue(payload, 'model') || null,
+    model: eventData?.model || getValue(payload, 'model') || null,
     transcriptPath,
     data,
     rawPayload: redact(transcriptEvent)
@@ -1186,13 +1190,16 @@ function captureTranscript(logPath, payload, eventName, sessionId) {
   try {
     const content = fs.readFileSync(transcriptPath, 'utf8');
     const seenEventIds = loadTranscriptState(logPath, sessionId);
-    const transcriptLines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    const transcriptLines = content.split(/\r?\n/);
+    let partial = false;
 
     transcriptLines.forEach((line, index) => {
+      if (!line.trim()) return;
       let transcriptEvent;
       try {
         transcriptEvent = JSON.parse(line);
       } catch {
+        partial = true;
         appendTranscriptParseError(logPath, payload, sessionId, transcriptPath, index + 1, line);
         return;
       }
@@ -1205,14 +1212,17 @@ function captureTranscript(logPath, payload, eventName, sessionId) {
       }
       seenEventIds.add(sourceEventId);
       if (transcriptEvent.type !== 'session.start') {
-        appendTranscriptRecord(logPath, payload, sessionId, transcriptPath, transcriptEvent);
+        appendTranscriptRecord(logPath, payload, sessionId, transcriptPath, transcriptEvent, index + 1);
       }
     });
 
+    const snapshotId = createEventId('snapshot', { sessionId, transcriptPath, content });
+    if (seenEventIds.has(snapshotId)) return;
+    seenEventIds.add(snapshotId);
     saveTranscriptState(logPath, sessionId, seenEventIds);
     appendRecord(logPath, {
       schemaVersion: 2,
-      eventId: createEventId('snapshot', { sessionId, eventName, content }),
+      eventId: snapshotId,
       recordType: 'transcript.snapshot',
       source: 'transcript',
       sourceEventType: eventName,
@@ -1226,7 +1236,11 @@ function captureTranscript(logPath, payload, eventName, sessionId) {
       transcriptPath,
       data: {
         contentHash: crypto.createHash('sha256').update(content).digest('hex'),
-        content: redactString(content)
+        historyStatus: partial ? 'partial' : 'source_snapshot',
+        content: transcriptLines.map(line => {
+          if (!line.trim()) return '';
+          try { return JSON.stringify(redact(JSON.parse(line))); } catch { return '[UNPARSEABLE SOURCE LINE]'; }
+        }).join('\n')
       }
     });
   } catch (error) {
@@ -1309,8 +1323,23 @@ function main(input) {
 
   const eventId = appendHookRecord(logPath, payload, event, sessionId);
   const isStopEvent = event === 'Stop' || event === 'agentStop';
+  if (/^(?:PostToolUse|postToolUse|PostToolUseFailure|postToolUseFailure|SessionEnd|sessionEnd|PreCompact|preCompact)$/.test(event)) {
+    captureTranscript(logPath, payload, event, sessionId);
+  }
   if (!isStopEvent) {
     captureTelemetry(payload, { platform: 'github-copilot', editor: 'vscode', legacyLogPath: logPath });
+  }
+  // Capture remains active even when legacy gates, advice and report refreshes are disabled.
+  if (process.env.CODE_BUDDY_LEGACY_GOVERNANCE !== 'true') {
+    if (event === 'UserPromptSubmit' || event === 'userPromptSubmitted') {
+      runCodeBuddy('start_turn', payload, sessionId, eventId);
+    }
+    if (isStopEvent) {
+      captureTranscript(logPath, payload, event, sessionId);
+      runCodeBuddy('end_turn', payload, sessionId, eventId);
+      captureTelemetry(payload, { platform: 'github-copilot', editor: 'vscode', legacyLogPath: logPath });
+    }
+    return null;
   }
   const handoff = handlePendingHandoffEvent(logPath, payload, event);
   const hookOutput = mergeHookOutput(

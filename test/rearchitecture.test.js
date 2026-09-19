@@ -255,7 +255,7 @@ test('session fit uses a calibrated semantic assessment and an explicit continua
 });
 
 test('managed agent instructions enforce evaluation and developer control', () => {
-  const instructions = buildCodeBuddyAgentInstructions();
+  const instructions = buildCodeBuddyAgentInstructions(true);
   assert.match(instructions, /#tool:codeBuddyPromptReviewer/);
   assert.match(instructions, /#tool:codeBuddyTaskDecomposer/);
   assert.match(instructions, /#tool:codeBuddyContextMeasurement/);
@@ -280,7 +280,7 @@ test('managed instructions merge idempotently without overwriting workspace rule
 
   assert.match(merged, /# Workspace rules/);
   assert.match(merged, /Keep public APIs stable/);
-  assert.match(merged, /# Code Buddy governance/);
+  assert.match(merged, /# Code Buddy capture/);
   assert.equal(mergedAgain, merged);
 });
 
