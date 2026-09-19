@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { listSessions, readEvidence } = require('../task-cards/evidence.cjs');
-const { createCard, saveRevision, loadCard, correctClaim, renderMarkdown } = require('../task-cards/card.cjs');
+const { createCard, saveRevision, loadCard, correctClaim, renderMarkdown, loadOrCreateLiveCard } = require('../task-cards/card.cjs');
 const { spawnSync } = require('node:child_process');
 const { buildGenerationPrompt } = require('../task-cards/prompt.cjs');
 
@@ -84,6 +84,27 @@ test('CLI exposes selected sessions and a new card without changing capture logs
   assert.equal(created.status, 0, created.stderr);
   assert.match(JSON.parse(created.stdout).id, /^[0-9a-f-]{36}$/);
   assert.deepEqual(fs.readFileSync(file), before);
+});
+
+test('live card freshness ignores other sessions and detects its own new evidence', (t) => {
+  const dir = workspace(t); const file = path.join(dir, '.code-buddy', 'codex-session.jsonl');
+  append(file, { schemaVersion: 2, sessionId: 's1', recordType: 'user.message', source: 'codex_rollout', sourceLine: 1, data: { role: 'user', content: [{ text: 'Build it' }] } });
+  append(file, { schemaVersion: 2, sessionId: 's2', recordType: 'user.message', source: 'codex_rollout', sourceLine: 2, data: { role: 'user', content: [{ text: 'Unrelated' }] } });
+  const live = loadOrCreateLiveCard(dir, 's1');
+  saveRevision(dir, live.card.id, fullRevision(readEvidence(dir, live.card.scope).items[0]), 0);
+  assert.equal(loadOrCreateLiveCard(dir, 's1').evidence.changedSinceRevision, false);
+
+  append(file, { schemaVersion: 2, sessionId: 's2', recordType: 'assistant.message', source: 'codex_rollout', sourceLine: 3, data: { role: 'assistant', content: [{ text: 'Still unrelated' }] } });
+  assert.equal(loadOrCreateLiveCard(dir, 's1').evidence.changedSinceRevision, false);
+
+  append(file, { schemaVersion: 2, sessionId: 's1', recordType: 'assistant.message', source: 'codex_rollout', sourceLine: 4, data: { role: 'assistant', content: [{ text: 'Task progress' }] } });
+  assert.equal(loadOrCreateLiveCard(dir, 's1').evidence.changedSinceRevision, true);
+});
+
+test('live card rejects an uncaptured session without creating a card', (t) => {
+  const dir = workspace(t);
+  assert.throws(() => loadOrCreateLiveCard(dir, 'never-captured'), /unknown live sessionId/);
+  assert.equal(fs.existsSync(path.join(dir, '.code-buddy', 'task-cards')), false);
 });
 
 test('a claim may cite a selected source beyond the first 500 observations', (t) => {

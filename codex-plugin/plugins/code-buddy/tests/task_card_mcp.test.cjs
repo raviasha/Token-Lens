@@ -79,6 +79,7 @@ test('capture-only Codex exposes on-demand task card tools and an interactive re
   assert.match(resource.result.contents[0].text, /Current task/);
   assert.match(resource.result.contents[0].text, /History/);
   assert.match(resource.result.contents[0].text, /open\(\{liveSessionId:state\.liveSessionId\}\)/);
+  assert.match(resource.result.contents[0].text, /const reopenArgs=state\.liveSessionId\?\{liveSessionId:state\.liveSessionId\}:\{cardId:state\.cardId\}/);
   assert.doesNotMatch(resource.result.contents[0].text, /localStorage|sessionStorage/);
 
   const [live, invalid] = run([
