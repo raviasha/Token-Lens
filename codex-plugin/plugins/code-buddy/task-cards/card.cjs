@@ -110,4 +110,26 @@ function listCards(workspace) {
     catch { return null; }
   }).filter(Boolean).sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 }
-module.exports = { createCard, saveRevision, loadCard, correctClaim, renderMarkdown, listCards, prepareGeneration, generationScope };
+function liveScope(sessionId) {
+  if (typeof sessionId !== 'string' || !sessionId.trim()) throw new Error('live sessionId is required');
+  const normalizedSessionId = sessionId.trim();
+  return { sessions: [{ platform: 'codex', sessionId: normalizedSessionId }], liveSessionId: normalizedSessionId };
+}
+function loadOrCreateLiveCard(workspace, sessionId) {
+  const scope = liveScope(sessionId);
+  const existing = listCards(workspace).find(item => item.scope.liveSessionId === scope.liveSessionId);
+  const card = existing ? loadCard(workspace, existing.id) : { ...createCard(workspace, scope), claims: [], corrections: [] };
+  const evidence = readEvidence(workspace, card.scope, { limit: 1 });
+  const previous = new Map((card.evidenceSnapshot || []).map(item => [item.source, item.snapshotHash]));
+  return {
+    card,
+    liveSessionId: scope.liveSessionId,
+    evidence: {
+      total: evidence.total,
+      warnings: evidence.coverage.warnings,
+      changedSinceRevision: card.revision === 0 || evidence.coverage.snapshots.some(item => previous.get(item.source) !== item.snapshotHash)
+    },
+    history: listCards(workspace).filter(item => item.id !== card.id)
+  };
+}
+module.exports = { createCard, saveRevision, loadCard, correctClaim, renderMarkdown, listCards, prepareGeneration, generationScope, loadOrCreateLiveCard };
