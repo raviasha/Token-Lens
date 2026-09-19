@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code-buddy.local/schemas/telemetry-event-1.0.json",
+  "title": "Code Buddy telemetry event 1.0",
+  "description": "Privacy-first raw event envelope for reconstructing a Code Buddy task without the original conversation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "timestamp",
+    "session_sequence",
+    "developer_id",
+    "session_id",
+    "task_id",
+    "interaction_id",
+    "platform",
+    "environment",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "event_id": { "type": "string", "pattern": "^evt_[a-f0-9]{24,}$" },
+    "event_type": {
+      "enum": [
+        "task_created",
+        "task_continued",
+        "task_state_changed",
+        "task_completed",
+        "task_abandoned",
+        "prompt_submitted",
+        "preflight_completed",
+        "recommendation_shown",
+        "recommendation_decision",
+        "agent_response",
+        "developer_followup",
+        "retry_detected",
+        "scope_changed",
+        "context_snapshot",
+        "conversation_compacted",
+        "session_changed",
+        "handoff_created",
+        "ai_usage",
+        "tool_activity",
+        "file_activity",
+        "git_event",
+        "test_run",
+        "build_run"
+      ]
+    },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "session_sequence": { "type": "integer", "minimum": 1 },
+    "developer_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": ["string", "null"] },
+    "task_id": { "type": ["string", "null"] },
+    "interaction_id": { "type": ["string", "null"] },
+    "platform": { "type": "string", "minLength": 1 },
+    "environment": { "$ref": "#/$defs/environment" },
+    "payload": { "type": "object" }
+  },
+  "$defs": {
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["editor", "repository_id", "branch"],
+      "properties": {
+        "editor": { "type": ["string", "null"] },
+        "repository_id": { "type": ["string", "null"] },
+        "branch": { "type": ["string", "null"] }
+      }
+    },
+    "score_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "threshold", "decision"],
+      "properties": {
+        "score": { "type": ["number", "null"], "minimum": 0 },
+        "threshold": { "type": ["number", "null"], "minimum": 0 },
+        "decision": { "type": "string" }
+      }
+    },
+    "task_state": {
+      "enum": ["created", "active", "paused", "completed", "abandoned", "superseded", "unknown"]
+    },
+    "recommendation_decision": {
+      "enum": ["accepted", "rejected", "dismissed", "modified", "unknown"]
+    },
+    "followup_classification": {
+      "enum": [
+        "clarification",
+        "correction",
+        "extension",
+        "scope_change",
+        "retry_request",
+        "validation_request",
+        "new_requirement",
+        "approval",
+        "question",
+        "unknown"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "event_type": { "const": "task_created" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": ["task_type", "initial_complexity", "objective", "task_detection"],
+            "properties": {
+              "task_type": { "type": "string" },
+              "initial_complexity": { "enum": ["small", "medium", "large"] },
+              "objective": {
+                "type": "object",
+                "required": ["action", "target_kind", "referenced_file_extensions", "issue_reference_hashes", "objective_fingerprint"],
+                "properties": {
+                  "action": { "type": "string" },
+                  "target_kind": { "type": "string" },
+                  "referenced_file_extensions": { "type": "array", "items": { "type": "string" } },
+                  "issue_reference_hashes": { "type": "array", "items": { "type": "string" } },
+                  "objective_fingerprint": { "type": "string" }
+                }
+              },
+              "task_detection": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "preflight_completed" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["prompt_quality", "task_decomposition", "context_pressure", "session_fit"],
+            "properties": {
+              "prompt_quality": { "$ref": "#/$defs/score_check" },
+              "task_decomposition": { "$ref": "#/$defs/score_check" },
+              "context_pressure": { "$ref": "#/$defs/score_check" },
+              "session_fit": { "$ref": "#/$defs/score_check" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "recommendation_decision" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["recommendation_id", "decision"],
+            "properties": {
+              "recommendation_id": { "type": "string" },
+              "decision": { "$ref": "#/$defs/recommendation_decision" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "task_state_changed" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": ["from", "to"],
+            "properties": {
+              "from": { "$ref": "#/$defs/task_state" },
+              "to": { "$ref": "#/$defs/task_state" }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

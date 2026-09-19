@@ -1,0 +1,19 @@
+.vscode/**
+.github/**
+src/**
+test/**
+node_modules/**
+.worktrees/**
+.code-buddy/**
+.token-lens/**
+codex-plugin/**
+docs/**
+**/*.map
+tsconfig.json
+package-lock.json
+.gitignore
+Code Buddy.md
+Code Buddy Analytics.md
+*Context Handoff.md
+*.vsix
+*-SHA256SUMS.txt

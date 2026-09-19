@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "code_buddy": {
+      "command": "python3",
+      "args": [
+        "./scripts/code_buddy_mcp.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

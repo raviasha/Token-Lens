@@ -1,0 +1,322 @@
+import * as path from 'node:path';
+import * as vscode from 'vscode';
+import {
+  CodeBuddyPolicy,
+  ContextCurationInput,
+  ContextMeasurementInput,
+  PromptReviewInput,
+  SessionFitInput,
+  SessionContextSnapshot,
+  TaskDecompositionInput
+} from '../core/contracts';
+import { EventAppendInput } from '../core/eventStore';
+import { isMeaningfulPrompt } from '../core/policyEngine';
+import { ContextMeasurementService } from '../providers/contextMeasurement';
+import { createPendingFreshHandoff, handoffMarker } from '../runtime/pendingHandoff';
+import { InterventionPresenter } from '../ui/interventionPresenter';
+import { ContextCurationService, PromptReviewService, SessionFitService, TaskDecompositionService } from './services';
+
+export const toolNames = {
+  promptReviewer: 'code-buddy_reviewPrompt',
+  taskDecomposer: 'code-buddy_decomposeTask',
+  contextMeasurement: 'code-buddy_measureContext',
+  sessionFit: 'code-buddy_assessSessionFit',
+  contextCurator: 'code-buddy_curateContext'
+} as const;
+
+export interface ToolEventLogger {
+  append(input: EventAppendInput): Promise<unknown>;
+}
+
+export interface CodeBuddyToolDependencies {
+  policy: CodeBuddyPolicy;
+  promptReviewer: PromptReviewService;
+  taskDecomposer: TaskDecompositionService;
+  sessionFit: SessionFitService;
+  contextCurator: ContextCurationService;
+  contextMeasurement: ContextMeasurementService;
+  presenter: InterventionPresenter;
+  eventLogger(): ToolEventLogger;
+  currentSnapshot(): Promise<SessionContextSnapshot | undefined>;
+  curationHistory(): Promise<string[]>;
+  currentLogPath(): string;
+}
+
+function toolResult(value: unknown): vscode.LanguageModelToolResult {
+  return new vscode.LanguageModelToolResult([
+    new vscode.LanguageModelTextPart(JSON.stringify(value))
+  ]);
+}
+
+class PromptReviewerTool implements vscode.LanguageModelTool<PromptReviewInput> {
+  public constructor(private readonly dependencies: CodeBuddyToolDependencies) {}
+
+  public async invoke(options: vscode.LanguageModelToolInvocationOptions<PromptReviewInput>, token: vscode.CancellationToken): Promise<vscode.LanguageModelToolResult> {
+    const input = options.input;
+    if (!isMeaningfulPrompt(input.prompt)) {
+      const result = {
+        contractVersion: 1,
+        kind: 'prompt_review',
+        status: 'ok',
+        score: 100,
+        dimensions: [],
+        reasons: ['Control input; semantic evaluation was not required.'],
+        issues: [],
+        interventionRecommended: false,
+        suggestions: [],
+        options: [{ id: 'original', label: 'Continue with my original prompt', prompt: input.prompt, preservesOriginalIntent: true }],
+        selectedOptionId: 'original',
+        originalPromptRetained: true
+      };
+      return toolResult(result);
+    }
+    const result = await this.dependencies.promptReviewer.review(input, token);
+    const selection = await this.dependencies.presenter.presentPromptReview(result);
+    result.selectedOptionId = selection;
+    result.originalPromptRetained = !selection || selection === 'original';
+    await this.dependencies.eventLogger().append({
+      eventType: result.status === 'ok' ? 'prompt.reviewed' : 'tool.failed',
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      data: {
+        invocationSource: 'language_model_tool',
+        toolName: toolNames.promptReviewer,
+        originalPrompt: input.prompt,
+        score: result.score,
+        dimensions: result.dimensions,
+        issues: result.issues,
+        interventionRecommended: result.interventionRecommended,
+        optionsPresented: result.options,
+        selectedOptionId: selection ?? null,
+        originalPromptRetained: result.originalPromptRetained,
+        failure: result.failure ?? null
+      }
+    });
+    return toolResult(result);
+  }
+
+  public prepareInvocation(): vscode.PreparedToolInvocation {
+    return { invocationMessage: 'Reviewing prompt quality with Code Buddy…' };
+  }
+}
+
+class TaskDecomposerTool implements vscode.LanguageModelTool<TaskDecompositionInput> {
+  public constructor(private readonly dependencies: CodeBuddyToolDependencies) {}
+
+  public async invoke(options: vscode.LanguageModelToolInvocationOptions<TaskDecompositionInput>, token: vscode.CancellationToken): Promise<vscode.LanguageModelToolResult> {
+    const input = options.input;
+    if (!isMeaningfulPrompt(input.task)) {
+      return toolResult({
+        contractVersion: 1,
+        kind: 'task_decomposition',
+        status: 'ok',
+        complexityScore: 0,
+        reasons: ['Control input; task decomposition was not required.'],
+        decompositionRecommended: false,
+        strategies: [],
+        originalTaskOption: { id: 'original', label: 'Continue with the original task', task: input.task },
+        selectedStrategyId: 'original',
+        originalTaskRetained: true
+      });
+    }
+    const result = await this.dependencies.taskDecomposer.decompose(input, token);
+    const selection = await this.dependencies.presenter.presentTaskDecomposition(result);
+    result.selectedStrategyId = selection.strategyId;
+    result.selectedStepId = selection.stepId;
+    result.originalTaskRetained = !selection.strategyId || selection.strategyId === 'original';
+    await this.dependencies.eventLogger().append({
+      eventType: result.status === 'ok' ? 'task.decomposition_evaluated' : 'tool.failed',
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      data: {
+        invocationSource: 'language_model_tool',
+        toolName: toolNames.taskDecomposer,
+        originalPrompt: input.task,
+        complexityScore: result.complexityScore,
+        reasons: result.reasons,
+        decompositionRecommended: result.decompositionRecommended,
+        optionsPresented: result.strategies,
+        selectedStrategyId: result.selectedStrategyId ?? null,
+        selectedStepId: result.selectedStepId ?? null,
+        originalTaskRetained: result.originalTaskRetained,
+        failure: result.failure ?? null
+      }
+    });
+    return toolResult(result);
+  }
+
+  public prepareInvocation(): vscode.PreparedToolInvocation {
+    return { invocationMessage: 'Assessing task complexity with Code Buddy…' };
+  }
+}
+
+class ContextMeasurementTool implements vscode.LanguageModelTool<ContextMeasurementInput> {
+  public constructor(private readonly dependencies: CodeBuddyToolDependencies) {}
+
+  public async invoke(options: vscode.LanguageModelToolInvocationOptions<ContextMeasurementInput>): Promise<vscode.LanguageModelToolResult> {
+    const snapshot = await this.dependencies.currentSnapshot();
+    const input: ContextMeasurementInput = {
+      ...options.input,
+      nativeMeasurement: options.input.nativeMeasurement ?? (snapshot?.estimate.method === 'api' ? {
+        value: snapshot.estimate.value,
+        unit: 'tokens',
+        confidence: snapshot.estimate.confidence,
+        providerId: snapshot.estimate.providerId ?? 'codex-cli-token-count',
+        capacityTokens: snapshot.estimate.capacityTokens,
+        utilization: snapshot.estimate.utilization,
+        measurementTimestamp: snapshot.estimate.measurementTimestamp,
+        cachedInputTokens: snapshot.estimate.cachedInputTokens,
+        cacheWriteInputTokens: snapshot.estimate.cacheWriteInputTokens,
+        outputTokens: snapshot.estimate.outputTokens,
+        reasoningTokens: snapshot.estimate.reasoningTokens,
+        totalTokens: snapshot.estimate.totalTokens
+      } : undefined),
+      estimate: options.input.estimate ?? (snapshot?.estimate.method === 'estimate' ? {
+        value: snapshot.estimate.value,
+        unit: 'estimated_tokens',
+        utilization: snapshot.estimate.utilization,
+        confidence: snapshot.estimate.confidence,
+        thresholdState: snapshot.estimate.thresholdState,
+        estimatorVersion: snapshot.estimate.estimatorVersion
+      } : undefined)
+    };
+    const result = this.dependencies.contextMeasurement.measure(input);
+    await this.dependencies.eventLogger().append({
+      eventType: result.status === 'ok' ? 'context.measured' : 'tool.failed',
+      sessionId: input.sessionId,
+      data: {
+        invocationSource: 'language_model_tool',
+        toolName: toolNames.contextMeasurement,
+        value: result.measurement.value,
+        unit: result.measurement.unit,
+        measurementMethod: result.measurement.method,
+        confidence: result.measurement.confidence,
+        thresholdState: result.measurement.thresholdState,
+        terminology: result.measurement.terminology,
+        healthLineStatus: result.healthLineStatus,
+        recommendation: result.recommendation,
+        failure: result.failure ?? null
+      }
+    });
+    return toolResult(result);
+  }
+
+  public prepareInvocation(): vscode.PreparedToolInvocation {
+    return { invocationMessage: 'Checking the best available context measurement…' };
+  }
+}
+
+class SessionFitTool implements vscode.LanguageModelTool<SessionFitInput> {
+  public constructor(private readonly dependencies: CodeBuddyToolDependencies) {}
+
+  public async invoke(options: vscode.LanguageModelToolInvocationOptions<SessionFitInput>, token: vscode.CancellationToken): Promise<vscode.LanguageModelToolResult> {
+    const input = options.input;
+    const result = await this.dependencies.sessionFit.assess(input, token);
+    await this.dependencies.eventLogger().append({
+      eventType: result.status === 'ok' ? 'session.fit_evaluated' : 'tool.failed',
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      data: {
+        invocationSource: 'language_model_tool',
+        toolName: toolNames.sessionFit,
+        newTaskLikelihood: result.newTaskLikelihood,
+        confidence: result.confidence,
+        reason: result.reason,
+        freshTaskRecommended: result.freshTaskRecommended,
+        assessmentSource: result.assessmentSource,
+        failure: result.failure ?? null
+      }
+    });
+    return toolResult(result);
+  }
+
+  public prepareInvocation(): vscode.PreparedToolInvocation {
+    return { invocationMessage: 'Checking whether this task fits the current session…' };
+  }
+}
+
+class ContextCuratorTool implements vscode.LanguageModelTool<ContextCurationInput> {
+  public constructor(private readonly dependencies: CodeBuddyToolDependencies) {}
+
+  public async invoke(options: vscode.LanguageModelToolInvocationOptions<ContextCurationInput>, token: vscode.CancellationToken): Promise<vscode.LanguageModelToolResult> {
+    const input = {
+      ...options.input,
+      conversationHistory: options.input.conversationHistory?.length
+        ? options.input.conversationHistory
+        : await this.dependencies.curationHistory()
+    };
+    let result = await this.dependencies.contextCurator.curate(input, token);
+    result = await this.dependencies.presenter.presentCuratedBundle(result);
+    let pendingHandoffId: string | undefined;
+    if (result.accepted) {
+      const snapshot = await this.dependencies.currentSnapshot();
+      const sourceSessionId = input.sessionId ?? snapshot?.sessionId ?? 'unknown';
+      const pending = input.mode === 'fresh_task'
+        ? await createPendingFreshHandoff(
+          path.join(path.dirname(this.dependencies.currentLogPath()), '.state'),
+          sourceSessionId,
+          input.targetTask
+        )
+        : undefined;
+      pendingHandoffId = pending?.handoffId;
+      await vscode.env.clipboard.writeText(renderHandoffPayload(result, pending && handoffMarker(pending.handoffId)));
+      if (pending) {
+        await this.dependencies.eventLogger().append({
+          eventType: 'context.handoff_pending',
+          sessionId: sourceSessionId,
+          data: { handoffId: pending.handoffId, targetTask: input.targetTask }
+        });
+      }
+    }
+    await this.dependencies.eventLogger().append({
+      eventType: result.status === 'ok' ? 'context.curation_completed' : 'tool.failed',
+      sessionId: input.sessionId,
+      data: {
+        invocationSource: 'language_model_tool',
+        toolName: toolNames.contextCurator,
+        targetTask: input.targetTask,
+        mode: input.mode,
+        curationOffered: true,
+        accepted: result.accepted,
+        handoffId: pendingHandoffId ?? null,
+        itemCount: result.items.length,
+        pinnedItemCount: result.items.filter((item) => item.pinned).length,
+        excludedHistoryCount: result.excludedHistory.length,
+        bundleMetadata: result.items.map((item) => ({ id: item.id, section: item.section, pinned: item.pinned })),
+        failure: result.failure ?? null
+      }
+    });
+    return toolResult(result);
+  }
+
+  public prepareInvocation(): vscode.PreparedToolInvocation {
+    return { invocationMessage: 'Curating minimum sufficient task context…' };
+  }
+}
+
+export function renderHandoffPayload(
+  bundle: { taskObjective: string; items: Array<{ section: string; content: string }>; suggestedStartingInstruction: string },
+  marker?: string
+): string {
+  return [
+    ...(marker ? [marker] : []),
+    '[CONTEXT HANDOFF]',
+    '',
+    `Task objective: ${bundle.taskObjective}`,
+    ...bundle.items.map((item) => `- ${item.section.replaceAll('_', ' ')}: ${item.content}`),
+    '',
+    '[STARTING INSTRUCTION]',
+    '',
+    bundle.suggestedStartingInstruction
+  ].join('\n');
+}
+
+export function registerCodeBuddyTools(context: vscode.ExtensionContext, dependencies: CodeBuddyToolDependencies): void {
+  context.subscriptions.push(
+    vscode.lm.registerTool(toolNames.promptReviewer, new PromptReviewerTool(dependencies)),
+    vscode.lm.registerTool(toolNames.taskDecomposer, new TaskDecomposerTool(dependencies)),
+    vscode.lm.registerTool(toolNames.contextMeasurement, new ContextMeasurementTool(dependencies)),
+    vscode.lm.registerTool(toolNames.sessionFit, new SessionFitTool(dependencies)),
+    vscode.lm.registerTool(toolNames.contextCurator, new ContextCuratorTool(dependencies))
+  );
+}

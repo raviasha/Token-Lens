@@ -1,0 +1,1 @@
+1eae82b41ec45b6ea3d8216f8e7f34eb2b816ae8fa295378fe4fdbb9a255d04e  code-buddy-0.8.0.vsix

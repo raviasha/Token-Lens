@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code-buddy.local/schemas/telemetry-event-1.1.json",
+  "title": "Code Buddy telemetry event 1.1",
+  "description": "Privacy-first local task telemetry with material-attempt and human-requested retry evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "event_id", "event_type", "timestamp", "session_sequence",
+    "developer_id", "session_id", "task_id", "interaction_id", "platform", "environment", "payload"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.1" },
+    "event_id": { "type": "string", "pattern": "^evt_[a-f0-9]{24,}$" },
+    "event_type": {
+      "enum": [
+        "task_created", "task_continued", "task_state_changed", "task_completed", "task_abandoned",
+        "prompt_submitted", "preflight_completed", "recommendation_shown", "recommendation_decision",
+        "recommendation_applied", "agent_response", "developer_followup", "retry_detected",
+        "implementation_attempt_observed", "human_retry_detected", "scope_changed", "context_snapshot",
+        "conversation_compacted", "session_changed", "handoff_created", "ai_usage", "tool_activity",
+        "file_activity", "git_event", "test_run", "build_run"
+      ]
+    },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "session_sequence": { "type": "integer", "minimum": 1 },
+    "developer_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": ["string", "null"] },
+    "task_id": { "type": ["string", "null"] },
+    "interaction_id": { "type": ["string", "null"] },
+    "platform": { "type": "string", "minLength": 1 },
+    "environment": {
+      "type": "object",
+      "required": ["editor", "repository_id", "branch"],
+      "properties": {
+        "editor": { "type": ["string", "null"] },
+        "repository_id": { "type": ["string", "null"] },
+        "branch": { "type": ["string", "null"] }
+      }
+    },
+    "payload": { "type": "object" }
+  },
+  "$defs": {
+    "score_check": {
+      "type": "object",
+      "required": ["score", "threshold", "decision"],
+      "properties": {
+        "score": { "type": ["number", "null"], "minimum": 0 },
+        "threshold": { "type": ["number", "null"], "minimum": 0 },
+        "decision": { "type": "string" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "event_type": { "const": "preflight_completed" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["prompt_quality", "task_decomposition", "context_pressure", "session_fit"],
+            "properties": {
+              "prompt_quality": { "$ref": "#/$defs/score_check" },
+              "task_decomposition": { "$ref": "#/$defs/score_check" },
+              "context_pressure": { "$ref": "#/$defs/score_check" },
+              "session_fit": { "$ref": "#/$defs/score_check" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "implementation_attempt_observed" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["attempt_id", "attempt_number", "attempt_kind", "evidence", "confidence", "detector_version"]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "human_retry_detected" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "human_retry_id", "source_followup_event_id", "attempt_id", "prior_attempt_id",
+              "human_retry_number", "implementation_attempt_number", "classification",
+              "classification_confidence", "task_match_confidence", "material_attempt_confidence",
+              "trigger", "detector_version"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "recommendation_applied" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["recommendation_id", "recommendation_type", "application_status", "evidence"]
+          }
+        }
+      }
+    }
+  ]
+}

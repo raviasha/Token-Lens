@@ -1,0 +1,328 @@
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import * as vscode from 'vscode';
+import { ContextCurationService, PromptReviewService, SessionFitService, TaskDecompositionService } from './ai/services';
+import { registerCodeBuddyTools } from './ai/tools';
+import { VscodeStructuredReasoner } from './ai/vscodeReasoner';
+import { getCodeBuddyPolicy } from './config';
+import { JsonlInterventionStore } from './core/eventStore';
+import { createProjectPolicyFile } from './core/projectPolicy';
+import {
+  getCurrentAgentInstructionsPath,
+  getCurrentAnalyticsPath,
+  getCurrentFeedbackPath,
+  getCurrentHookConfigPath,
+  getCurrentInterventionLogPath,
+  getCurrentLogPath,
+  getCurrentTelemetryPath,
+  installHooks,
+  removeHooks
+} from './hookInstaller';
+import { buildCurationSource, observeSession, readHookRecords } from './observability/sessionReader';
+import { ContextMeasurementService } from './providers/contextMeasurement';
+import { DeterministicGovernance } from './runtime/governance';
+import { CodeBuddyWorkflow } from './runtime/workflow';
+import { InterventionPresenter } from './ui/interventionPresenter';
+
+const execFileAsync = promisify(execFile);
+
+async function openWorkspaceFile(filePath: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await fs.access(filePath);
+  } catch {
+    await fs.writeFile(filePath, '', 'utf8');
+  }
+  await vscode.window.showTextDocument(vscode.Uri.file(filePath), { preview: false });
+}
+
+function watchCodeBuddyFile(context: vscode.ExtensionContext): void {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    return;
+  }
+
+  let feedbackPath: string;
+  try {
+    feedbackPath = path.normalize(getCurrentFeedbackPath());
+  } catch {
+    return;
+  }
+
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(workspaceFolder, '**/*.md')
+  );
+  const refreshOpenFile = (uri: vscode.Uri): void => {
+    if (path.normalize(uri.fsPath) !== feedbackPath) {
+      return;
+    }
+    const activeEditor = vscode.window.activeTextEditor;
+    if (!activeEditor || activeEditor.document.isDirty || path.normalize(activeEditor.document.uri.fsPath) !== feedbackPath) {
+      return;
+    }
+    void vscode.commands.executeCommand('workbench.action.files.revert');
+  };
+
+  context.subscriptions.push(watcher, watcher.onDidChange(refreshOpenFile), watcher.onDidCreate(refreshOpenFile));
+}
+
+export function activate(context: vscode.ExtensionContext): void {
+  const output = vscode.window.createOutputChannel('Code Buddy');
+  context.subscriptions.push(output);
+
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  status.text = '$(record) Code Buddy';
+  status.tooltip = 'Open Code Buddy session log';
+  status.command = 'tokenLens.openLog';
+  status.show();
+  context.subscriptions.push(status);
+  watchCodeBuddyFile(context);
+
+  const policy = getCodeBuddyPolicy(vscode.workspace.workspaceFolders?.[0]?.uri);
+  const reasoner = new VscodeStructuredReasoner();
+  const promptReviewer = new PromptReviewService(reasoner, policy);
+  const taskDecomposer = new TaskDecompositionService(reasoner, policy);
+  const sessionFit = new SessionFitService(reasoner, policy);
+  const contextCurator = new ContextCurationService(reasoner);
+  const contextMeasurement = new ContextMeasurementService(policy);
+  const presenter = new InterventionPresenter();
+  const eventLogger = (): JsonlInterventionStore => new JsonlInterventionStore(
+    getCurrentInterventionLogPath(),
+    vscode.workspace.getConfiguration('tokenLens').get<boolean>('redactSensitiveData', true)
+  );
+  const currentSnapshot = async () => observeSession(await readHookRecords(getCurrentLogPath()), policy);
+  const curationHistory = async () => buildCurationSource(await readHookRecords(getCurrentLogPath()));
+  const workflow = new CodeBuddyWorkflow({
+    promptReviewer,
+    taskDecomposer,
+    contextCurator,
+    contextMeasurement,
+    presenter,
+    currentSnapshot,
+    curationHistory,
+    currentLogPath: getCurrentLogPath,
+    appendEvent: (input) => eventLogger().append(input)
+  });
+
+  registerCodeBuddyTools(context, {
+    policy,
+    promptReviewer,
+    taskDecomposer,
+    sessionFit,
+    contextCurator,
+    contextMeasurement,
+    presenter,
+    eventLogger,
+    currentSnapshot,
+    curationHistory,
+    currentLogPath: getCurrentLogPath
+  });
+  new DeterministicGovernance({
+    policy,
+    currentLogPath: getCurrentLogPath,
+    appendEvent: (input) => eventLogger().append(input),
+    workflow
+  }).register(context);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('tokenLens.createProjectConfig', async () => {
+      try {
+        const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspace) throw new Error('Open a workspace folder first.');
+        const result = createProjectPolicyFile(workspace);
+        await vscode.window.showTextDocument(vscode.Uri.file(result.filePath), { preview: false });
+        await vscode.window.showInformationMessage(
+          result.created
+            ? 'Created code-buddy.yaml with the default project settings.'
+            : 'Opened the existing code-buddy.yaml without changing it.'
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not create the project configuration: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('tokenLens.installHooks', async () => {
+      try {
+        const result = await installHooks(context);
+        output.appendLine(`Installed Copilot hooks at ${result.configPath}`);
+        output.appendLine(`Writing structured records to ${result.logPath}`);
+        output.appendLine(`Writing current feedback to ${result.feedbackPath}`);
+        output.appendLine(`Writing detailed analytics to ${result.analyticsPath}`);
+        output.appendLine(`Writing structured interventions to ${result.interventionLogPath}`);
+        output.appendLine(`Writing versioned task telemetry to ${result.telemetryPath}`);
+        output.appendLine(`Installed Code Buddy agent instructions at ${result.instructionsPath}`);
+        const choice = await vscode.window.showInformationMessage(
+          `${result.created ? 'Code Buddy Copilot hooks installed.' : 'Code Buddy Copilot hooks updated.'} Built-in defaults are active unless this project has code-buddy.yaml.`,
+          'Create or Open Project Configuration'
+        );
+        if (choice === 'Create or Open Project Configuration') {
+          await vscode.commands.executeCommand('tokenLens.createProjectConfig');
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.appendLine(`Install failed: ${message}`);
+        await vscode.window.showErrorMessage(`Code Buddy could not install hooks: ${message}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('tokenLens.removeHooks', async () => {
+      try {
+        const configPath = await removeHooks();
+        output.appendLine(`Removed Copilot hooks at ${configPath}`);
+        await vscode.window.showInformationMessage('Code Buddy Copilot hooks removed. Existing logs were kept.');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.appendLine(`Remove failed: ${message}`);
+        await vscode.window.showErrorMessage(`Code Buddy could not remove hooks: ${message}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('tokenLens.openInterventions', async () => {
+      try {
+        await openWorkspaceFile(getCurrentInterventionLogPath());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open interventions: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('tokenLens.openTelemetry', async () => {
+      try {
+        const rawDirectory = path.join(getCurrentTelemetryPath(), 'raw');
+        await fs.mkdir(rawDirectory, { recursive: true });
+        await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(rawDirectory));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open raw telemetry: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('tokenLens.replayTelemetryTask', async () => {
+      try {
+        const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspace) throw new Error('Open a workspace folder first.');
+        const telemetryScript = path.join(context.extensionPath, 'telemetry.cjs');
+        const listed = await execFileAsync(process.execPath, [telemetryScript, 'list', workspace], {
+          cwd: workspace,
+          timeout: 10_000,
+          windowsHide: true
+        });
+        const taskIds = listed.stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+        if (!taskIds.length) {
+          await vscode.window.showInformationMessage('Code Buddy has no task telemetry to replay yet.');
+          return;
+        }
+        const taskId = await vscode.window.showQuickPick(taskIds, {
+          title: 'Code Buddy Task Replay',
+          placeHolder: 'Select a task to reconstruct',
+          ignoreFocusOut: true
+        });
+        if (!taskId) return;
+        const result = await execFileAsync(process.execPath, [
+          telemetryScript,
+          'replay',
+          workspace,
+          taskId
+        ], { cwd: workspace, timeout: 10_000, windowsHide: true });
+        const document = await vscode.workspace.openTextDocument({
+          language: 'markdown',
+          content: result.stdout
+        });
+        await vscode.window.showTextDocument(document, { preview: false });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not replay task telemetry: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('tokenLens.openHumanRetryEvidence', async () => {
+      try {
+        const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspace) throw new Error('Open a workspace folder first.');
+        const telemetryScript = path.join(context.extensionPath, 'telemetry.cjs');
+        const result = await execFileAsync(process.execPath, [telemetryScript, 'report', workspace], {
+          cwd: workspace,
+          timeout: 10_000,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            TOKEN_LENS_HUMAN_RETRY_MIN_TASKS: String(policy.measurement.humanRetries.minimumComparableTasks),
+            TOKEN_LENS_HUMAN_RETRY_MIN_FACTOR_TASKS: String(policy.measurement.humanRetries.minimumTasksPerFactor),
+            TOKEN_LENS_HUMAN_RETRY_RELIABILITY_THRESHOLD: String(policy.measurement.humanRetries.reliabilityThreshold),
+            TOKEN_LENS_HUMAN_RETRY_MIN_EFFECT: String(policy.measurement.humanRetries.minimumEffectSize),
+            TOKEN_LENS_HUMAN_RETRY_OVERDISPERSION_THRESHOLD: String(policy.measurement.humanRetries.overdispersionThreshold)
+          }
+        });
+        const document = await vscode.workspace.openTextDocument({ language: 'markdown', content: result.stdout });
+        await vscode.window.showTextDocument(document, { preview: false });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open human retry evidence: ${message}`);
+      }
+    }),
+    vscode.commands.registerCommand('tokenLens.reviewPrompt', () => workflow.reviewPrompt()),
+    vscode.commands.registerCommand('tokenLens.decomposeTask', () => workflow.decomposeTask()),
+    vscode.commands.registerCommand('tokenLens.measureContext', () => workflow.measureContext()),
+    vscode.commands.registerCommand('tokenLens.curateContext', () => workflow.curate(undefined, 'fresh_task'))
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('tokenLens.openLog', async () => {
+      try {
+        await openWorkspaceFile(getCurrentLogPath());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open the log: ${message}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('tokenLens.openCodeBuddy', async () => {
+      try {
+        await openWorkspaceFile(getCurrentFeedbackPath());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open feedback: ${message}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('tokenLens.openAnalytics', async () => {
+      try {
+        await openWorkspaceFile(getCurrentAnalyticsPath());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open analytics: ${message}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('tokenLens.openHookConfig', async () => {
+      try {
+        await vscode.window.showTextDocument(vscode.Uri.file(getCurrentHookConfigPath()), { preview: false });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open the hook configuration: ${message}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('tokenLens.openAgentInstructions', async () => {
+      try {
+        await vscode.window.showTextDocument(vscode.Uri.file(getCurrentAgentInstructionsPath()), { preview: false });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await vscode.window.showErrorMessage(`Code Buddy could not open agent instructions: ${message}`);
+      }
+    })
+  );
+}
+
+export function deactivate(): void {}

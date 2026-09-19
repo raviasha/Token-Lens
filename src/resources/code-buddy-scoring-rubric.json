@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "promptQuality": {
+    "satisfactory": { "range": "75-100", "example": "Add expiry tests for src/auth/tokenService.ts and run npm test." },
+    "enhance": { "range": "0-74", "example": "Fix login." }
+  },
+  "taskScope": {
+    "satisfactory": { "range": "0-64", "example": "Add one validation rule and its focused test." },
+    "decompose": { "range": "65-100", "example": "Migrate authentication, update all callers, and replace the test suite." }
+  },
+  "sessionFit": {
+    "continuation": { "newTaskLikelihood": 0, "example": "Continue authentication work and add expiry tests." },
+    "unrelated": { "newTaskLikelihood": 82, "example": "Build CSV export after OAuth refresh handling." }
+  }
+}

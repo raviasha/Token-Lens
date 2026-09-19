@@ -1,0 +1,20 @@
+{
+  "name": "token-lens",
+  "interface": {
+    "displayName": "Token Lens"
+  },
+  "plugins": [
+    {
+      "name": "code-buddy",
+      "source": {
+        "source": "local",
+        "path": "./plugins/code-buddy"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
