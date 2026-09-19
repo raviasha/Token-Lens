@@ -154,7 +154,14 @@ for (const [platform, hook, analytics] of [
       });
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stderr, '');
-      assert.equal(result.stdout, '', 'capture must not inject advice or block tools');
+      if (platform === 'codex' && payload.hook_event_name === 'UserPromptSubmit') {
+        const output = JSON.parse(result.stdout);
+        assert.match(output.hookSpecificOutput?.additionalContext || '', /mcp__code_buddy__task_card_open/);
+        assert.match(output.hookSpecificOutput?.additionalContext || '', /liveSessionId.*capture-session/);
+        assert.doesNotMatch(output.hookSpecificOutput?.additionalContext || '', /Generate\/Update/);
+      } else {
+        assert.equal(result.stdout, '', 'capture must not inject advice or block tools');
+      }
     }
     run({ hook_event_name: 'UserPromptSubmit', prompt: 'Implement pagination with a boundary test.' });
     run({ hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_use_id: 'edit-1', tool_input: { path: 'app.js' } });

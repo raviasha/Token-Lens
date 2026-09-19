@@ -4,7 +4,7 @@
 > advice, fresh-task/handoff gates, retry recommendations and automatic report
 > refreshes are now disabled by default. Raw lifecycle, transcript, usage and
 > worktree evidence collection continues. Existing Markdown reports are preserved.
-> On-demand Task Cards are available through local MCP tools and a UI resource.
+> Live Task Cards are available through local MCP tools and a UI resource.
 > The governance sections below
 > describe the retained legacy implementation, not the active default workflow.
 >
@@ -16,6 +16,22 @@
 
 This is the development copy. For public installation, use the [Code Buddy
 distribution repository](https://github.com/raviasha/Code_Buddy).
+
+## Live Task Card
+
+For a capture-only Codex task, Code Buddy requests an expanded live Task Card
+for the active session on the first meaningful prompt. This is a best-effort
+agent bridge because the current Codex plugin API cannot force an MCP panel to
+open; it never blocks coding when the panel cannot be shown.
+
+- **Minimize** affects only the displayed panel. Reopening the task or restarting
+  Codex starts a new expanded panel for that session.
+- **Refresh** reloads local evidence availability and the saved card revision. It
+  never creates a model request or revision.
+- **Generate/Update** is the developer action that asks the active agent to
+  create a new cited revision from frozen local evidence.
+- **History** is optional and opens only developer-selected older cards or
+  captured sessions; it does not alter the live card's current-session scope.
 
 ## Persistent setting
 

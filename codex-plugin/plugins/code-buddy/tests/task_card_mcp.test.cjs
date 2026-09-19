@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
+const pluginRoot = path.join(__dirname, '..');
 const server = path.join(__dirname, '../scripts/code_buddy_mcp.py');
 const cardCli = path.join(__dirname, '../task-cards/cli.cjs');
 function run(requests) {
@@ -40,6 +41,13 @@ test('live card scope is session-specific and reuses its local card', (t) => {
   const reopened = runCardCli(workspace, 'live', 's1');
   assert.equal(reopened.card.id, live.card.id);
   assert.equal(reopened.history.length, 0);
+});
+
+test('capture-only skill describes the live task card lifecycle', () => {
+  const skill = fs.readFileSync(path.join(pluginRoot, 'skills', 'code-buddy', 'SKILL.md'), 'utf8');
+  assert.match(skill, /live Task Card/i);
+  assert.match(skill, /Generate\/Update/);
+  assert.match(skill, /History/);
 });
 
 test('capture-only Codex exposes on-demand task card tools and an interactive resource', (t) => {

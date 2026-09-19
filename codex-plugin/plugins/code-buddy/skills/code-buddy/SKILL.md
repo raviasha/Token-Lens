@@ -23,17 +23,24 @@ Preserve existing Markdown reports and raw telemetry. Distinguish unavailable,
 redacted and estimated data from measured observations. Context-window usage is
 not total tokens consumed. Heuristic task IDs and completion flags are inferences.
 
-Task-card analysis is separate from capture. Use its on-demand tools only when
-they are callable in the current runtime; an older running host may still need
-a plugin refresh.
+Task-card analysis is separate from capture. Use its live Task Card tools only
+when they are callable in the current runtime; an older running host may still
+need a plugin refresh.
 
-## On-demand Task Card
+## Live and historical Task Cards
 
-When the developer asks to open a task card, call `task_card_open` with the
-absolute workspace. Its UI lists saved cards and captured sessions when no
-scope is supplied. If a selected current Codex session is known, the developer
-may choose it in the widget or you may pass an explicit selected scope. Opening
-or restoring a card does not generate or update it.
+For a capture-only Codex task, Code Buddy requests an expanded live Task Card
+for the active session on its first meaningful prompt. The request is
+best-effort and never blocks coding. When the active session is known, call
+`task_card_open` with the absolute workspace and `liveSessionId`; this opens or
+reuses the single-session live card. Minimize lasts only for the displayed
+panel, so reopening the task starts expanded again.
+
+Refresh reloads evidence availability and the saved revision without creating a
+model request. History is optional: it lets the developer open a saved card or
+captured session without replacing the current live card scope. Generic
+`task_card_open` calls with `cardId`, `scope`, or no scope retain the existing
+historical-card workflows.
 
 When the developer clicks Generate/Update or directly asks for generation,
 use this same active Codex conversation. Follow the generation prompt returned
