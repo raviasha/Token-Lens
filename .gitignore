@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+dist/
+.token-lens/
+.code-buddy/*.jsonl
+.code-buddy/.state/
+.code-buddy/telemetry/
+.worktrees/
+.vscode/
+*.log
+*.vsix
