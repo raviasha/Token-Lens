@@ -59,6 +59,40 @@ function writeRollout(sessionsRoot, workspace, sessionId, inputTokens, modelCont
   ].map(JSON.stringify).join('\n') + '\n', 'utf8');
 }
 
+test('capture-only requests one live task card per running session', (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-live-card-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const environment = { CODE_BUDDY_LEGACY_GOVERNANCE: 'false' };
+
+  const first = runPluginHook({
+    hook_event_name: 'UserPromptSubmit', session_id: 'live-s1', cwd: workspace,
+    prompt: 'Implement the live Task Card panel and its tests.'
+  }, workspace, environment);
+  const firstContext = first.output?.hookSpecificOutput?.additionalContext || '';
+  assert.match(firstContext, /mcp__code_buddy__task_card_open/);
+  assert.match(firstContext, /liveSessionId.*live-s1/);
+  assert.doesNotMatch(firstContext, /Generate\/Update/);
+
+  const duplicate = runPluginHook({
+    hook_event_name: 'UserPromptSubmit', session_id: 'live-s1', cwd: workspace,
+    prompt: 'Add the focused tests now.'
+  }, workspace, environment);
+  assert.equal(duplicate.output, null);
+
+  const acknowledgement = runPluginHook({
+    hook_event_name: 'UserPromptSubmit', session_id: 'live-s2', cwd: workspace, prompt: 'yes'
+  }, workspace, environment);
+  assert.equal(acknowledgement.output, null);
+  assert.equal(fs.existsSync(path.join(workspace, '.code-buddy', '.state', 'live-card', 'live-s2.json')), false);
+
+  runPluginHook({ hook_event_name: 'SessionStart', session_id: 'live-s1', cwd: workspace }, workspace, environment);
+  const reopened = runPluginHook({
+    hook_event_name: 'UserPromptSubmit', session_id: 'live-s1', cwd: workspace,
+    prompt: 'Resume the live Task Card work after reopening this task.'
+  }, workspace, environment);
+  assert.match(reopened.output?.hookSpecificOutput?.additionalContext || '', /liveSessionId.*live-s1/);
+});
+
 test('injects automatic Code Buddy preflight for a meaningful request', () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'code-buddy-plugin-preflight-'));
   const { output } = runPluginHook({

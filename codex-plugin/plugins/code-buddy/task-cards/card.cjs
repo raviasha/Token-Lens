@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { readEvidence } = require('./evidence.cjs');
+const { listSessions, readEvidence } = require('./evidence.cjs');
 
 function cardDir(workspace, id) {
   if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('invalid card id');
@@ -44,6 +44,19 @@ function generationScope(workspace, id) {
   const file = path.join(cardDir(workspace, id), 'generation.json');
   return fs.existsSync(file) ? json(file).scope : loadCard(workspace, id).scope;
 }
+function selectedEvidence(workspace, scope) {
+  const page = readEvidence(workspace, scope, { limit: 500 });
+  const items = [...page.items];
+  for (let offset = page.nextOffset; offset !== null;) {
+    const next = readEvidence(workspace, scope, { offset, limit: 500 });
+    items.push(...next.items);
+    offset = next.nextOffset;
+  }
+  return { ...page, items };
+}
+function selectedEvidenceFingerprint(items) {
+  return crypto.createHash('sha256').update(items.map(item => item.id).join('\0')).digest('hex');
+}
 function validateRevision(revision, ids) {
   if (!revision || typeof revision.title !== 'string' || !revision.title.trim()) throw new Error('title is required');
   if (!['in_progress', 'blocked', 'completed', 'unknown'].includes(revision.status)) throw new Error('invalid status');
@@ -64,20 +77,15 @@ function saveRevision(workspace, id, revision, expectedRevision) {
   const dir = cardDir(workspace, id); const current = loadCard(workspace, id);
   if (current.revision !== expectedRevision) throw new Error('revision conflict');
   const scope = generationScope(workspace, id);
-  const page = readEvidence(workspace, scope, { limit: 500 });
+  const page = selectedEvidence(workspace, scope);
   const ids = new Set(page.items.map(x => x.id));
-  for (let offset = page.nextOffset; offset !== null;) {
-    const next = readEvidence(workspace, scope, { offset, limit: 500 });
-    next.items.forEach(item => ids.add(item.id));
-    offset = next.nextOffset;
-  }
   validateRevision(revision, ids);
   const revisedIds = new Set(revision.claims.map(claim => claim.id));
   for (const correction of current.corrections) {
     if (!revisedIds.has(correction.claimId)) throw new Error(`corrected claim must retain its id: ${correction.claimId}`);
   }
   const number = current.revision + 1;
-  const saved = { ...revision, savedAt: new Date().toISOString(), evidenceSnapshot: page.coverage.snapshots };
+  const saved = { ...revision, savedAt: new Date().toISOString(), evidenceSnapshot: page.coverage.snapshots, selectedEvidenceFingerprint: selectedEvidenceFingerprint(page.items) };
   const target = path.join(dir, `revision-${number}.json`);
   fs.writeFileSync(target, JSON.stringify(saved, null, 2), { flag: 'wx', mode: 0o600 });
   const meta = { id, revision: number, createdAt: current.createdAt, updatedAt: saved.savedAt };
@@ -110,4 +118,26 @@ function listCards(workspace) {
     catch { return null; }
   }).filter(Boolean).sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 }
-module.exports = { createCard, saveRevision, loadCard, correctClaim, renderMarkdown, listCards, prepareGeneration, generationScope };
+function liveScope(workspace, sessionId) {
+  if (typeof sessionId !== 'string' || !sessionId.trim()) throw new Error('live sessionId is required');
+  const normalizedSessionId = sessionId.trim();
+  if (!listSessions(workspace).some(session => session.platform === 'codex' && session.sessionId === normalizedSessionId)) throw new Error('unknown live sessionId');
+  return { sessions: [{ platform: 'codex', sessionId: normalizedSessionId }], liveSessionId: normalizedSessionId };
+}
+function loadOrCreateLiveCard(workspace, sessionId) {
+  const scope = liveScope(workspace, sessionId);
+  const existing = listCards(workspace).find(item => item.scope.liveSessionId === scope.liveSessionId);
+  const card = existing ? loadCard(workspace, existing.id) : { ...createCard(workspace, scope), claims: [], corrections: [] };
+  const evidence = selectedEvidence(workspace, card.scope);
+  return {
+    card,
+    liveSessionId: scope.liveSessionId,
+    evidence: {
+      total: evidence.total,
+      warnings: evidence.coverage.warnings,
+      changedSinceRevision: card.revision === 0 || card.selectedEvidenceFingerprint !== selectedEvidenceFingerprint(evidence.items)
+    },
+    history: listCards(workspace).filter(item => item.id !== card.id)
+  };
+}
+module.exports = { createCard, saveRevision, loadCard, correctClaim, renderMarkdown, listCards, prepareGeneration, generationScope, loadOrCreateLiveCard };
