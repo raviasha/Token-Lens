@@ -68,5 +68,19 @@ test('capture-only Codex exposes on-demand task card tools and an interactive re
   assert.match(resource.result.contents[0].text, /request\('ui\/initialize'/);
   assert.match(resource.result.contents[0].text, /ui\/notifications\/initialized/);
   assert.match(resource.result.contents[0].text, /ui\/message',\{role:'user'/);
+  assert.match(resource.result.contents[0].text, /Current task/);
+  assert.match(resource.result.contents[0].text, /History/);
+  assert.match(resource.result.contents[0].text, /open\(\{liveSessionId:state\.liveSessionId\}\)/);
+  assert.doesNotMatch(resource.result.contents[0].text, /localStorage|sessionStorage/);
+
+  const [live, invalid] = run([
+    { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'task_card_open', arguments: { workspace, liveSessionId: 's1' } } },
+    { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'task_card_open', arguments: { workspace, liveSessionId: '   ' } } },
+  ]);
+  assert.equal(live.result.structuredContent.liveSessionId, 's1');
+  assert.equal(live.result.structuredContent.card.scope.liveSessionId, 's1');
+  assert.ok(live.result.structuredContent.history.some(card => card.id === opened.result.structuredContent.cardId));
+  assert.equal(invalid.result.isError, true);
+  assert.match(invalid.result.content[0].text, /live sessionId is required/);
   assert.equal(fs.existsSync(path.join(workspace, '.code-buddy/interventions.jsonl')), false);
 });

@@ -37,6 +37,17 @@ def task_card_sessions(arguments: dict[str, Any]) -> Any:
 
 
 def task_card_open(arguments: dict[str, Any]) -> dict[str, Any]:
+    live_session_id = as_string(arguments.get("liveSessionId"))
+    if "liveSessionId" in arguments:
+        if not live_session_id:
+            raise ValueError("live sessionId is required")
+        result = card_cli("live", arguments, live_session_id)
+        return {
+            "workspace": str(workspace_path(arguments)),
+            "cardId": result["card"]["id"],
+            "sessions": card_cli("sessions", arguments),
+            **result,
+        }
     card_id = as_string(arguments.get("cardId"))
     if not card_id:
         scope = arguments.get("scope")
@@ -782,7 +793,7 @@ TOOLS = [
 
 CARD_TOOLS = [
     tool("task_card_sessions", "List locally captured sessions for developer-selected task-card scope.", ["workspace"], {"workspace": WORKSPACE}, True),
-    tool("task_card_open", "Open the local Task Card widget. Supply cardId to restore an existing card, scope to create one, or neither to list choices. Opening never calls a model.", ["workspace"], {"workspace": WORKSPACE, "cardId": {"type": "string"}, "scope": {"type": "object"}}),
+    tool("task_card_open", "Open the local Task Card widget. Supply liveSessionId for the current Codex task, cardId to restore an existing card, scope to create one, or neither to list choices. Opening never calls a model.", ["workspace"], {"workspace": WORKSPACE, "liveSessionId": {"type": "string", "description": "Current Codex session for the expanded live Task Card."}, "cardId": {"type": "string"}, "scope": {"type": "object"}}),
     tool("task_card_prepare", "Freeze selected evidence and prepare a generation request for this active Codex conversation after the developer clicks Generate/Update.", ["workspace", "cardId"], {"workspace": WORKSPACE, "cardId": {"type": "string"}}),
     tool("task_card_evidence", "Read a page of selected task-card evidence; continue until nextOffset is null.", ["workspace", "cardId"], {"workspace": WORKSPACE, "cardId": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, True),
     tool("task_card_save", "Validate and save an agent-authored task card revision from a local JSON draft path.", ["workspace", "cardId", "expectedRevision", "draftPath"], {"workspace": WORKSPACE, "cardId": {"type": "string"}, "expectedRevision": {"type": "integer"}, "draftPath": {"type": "string"}}),
