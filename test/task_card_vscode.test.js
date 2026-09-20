@@ -6,7 +6,7 @@ const path = require('node:path');
 const Module = require('node:module');
 const { promisify } = require('node:util');
 
-test('VS Code Task Card opens on demand and restores after minimize without generating', async (t) => {
+test('VS Code opens a current workspace Task Card before capture and restores it after minimize', async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'card-view-'));
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
   const commands = new Map(); const panels = [];
@@ -31,16 +31,18 @@ test('VS Code Task Card opens on demand and restores after minimize without gene
     delete require.cache[require.resolve('../dist/taskCards.js')];
     const { registerTaskCards } = require('../dist/taskCards.js');
     registerTaskCards({ extensionPath: path.join(__dirname, '..'), subscriptions: [] }, { appendLine() {} });
-    await commands.get('tokenLens.openTaskCard')();
+    for (let attempt = 0; attempt < 20 && !panels[0]?.webview.html; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(panels.length, 1);
-    assert.match(panels[0].webview.html, /Generate card/);
+    assert.match(panels[0].webview.html, /Current task/);
+    assert.match(panels[0].webview.html, /Waiting for first captured task/);
+    assert.match(panels[0].webview.html, /data-action="generate" disabled/);
     await panels[0].receive({ action: 'minimize' });
     await commands.get('tokenLens.openTaskCard')();
     assert.equal(panels.length, 2);
-    assert.match(panels[1].webview.html, /Not generated/);
+    assert.match(panels[1].webview.html, /Current task/);
     panels[1].dispose();
-    assert.equal(fs.existsSync(path.join(workspace, '.code-buddy/task-cards')), false);
-  } finally { Module._load = load; }
+    assert.equal(fs.existsSync(path.join(workspace, '.code-buddy/task-cards')), true);
+  } finally { panels.forEach(panel => panel.dispose()); Module._load = load; }
 });
 
 test('VS Code scope picker leads with the prompt-derived task name and keeps the ID secondary', async (t) => {
@@ -120,7 +122,7 @@ test('VS Code opens the latest Copilot task card once per session and reopens it
     const { registerTaskCards } = require('../dist/taskCards.js');
     const context = { extensionPath: path.join(__dirname, '..'), subscriptions: [] };
     registerTaskCards(context, { appendLine(line) { output.push(line); } });
-    await waitFor(() => panels.length === 1 && panels[0].webview.html);
+    await waitFor(() => panels.length === 1 && /Task copilot-s1/.test(panels[0].webview.html));
     assert.equal(panels.length, 1, output.join('\n'));
     assert.match(panels[0].webview.html, /Task copilot-s1/);
     assert.match(panels[0].webview.html, /github-copilot: copilot-s1/);
@@ -137,11 +139,11 @@ test('VS Code opens the latest Copilot task card once per session and reopens it
 
     panels[1].dispose();
     registerTaskCards({ extensionPath: path.join(__dirname, '..'), subscriptions: [] }, { appendLine() {} });
-    await waitFor(() => panels.length === 3 && panels[2].webview.html);
+    await waitFor(() => panels.length === 3 && /github-copilot: copilot-s2/.test(panels[2].webview.html));
     assert.equal(panels.length, 3, 'a VS Code restart opens the latest captured session again');
     assert.match(panels[2].webview.html, /github-copilot: copilot-s2/);
     panels[2].dispose();
-  } finally { Module._load = load; }
+  } finally { panels.forEach(panel => panel.dispose()); Module._load = load; }
 });
 
 test('VS Code ignores an older live-card lookup that finishes after a newer session', async (t) => {
@@ -158,6 +160,7 @@ test('VS Code ignores an older live-card lookup that finishes after a newer sess
   ];
   const execFile = (_file, args, _options, callback) => {
       const command = args[1];
+      if (command === 'workspace') return queueMicrotask(() => callback(null, JSON.stringify({ card: cards.get('card-s1') }), ''));
       if (command === 'sessions') return queueMicrotask(() => failSessionDiscovery ? callback(new Error('capture unavailable'), '', '') : callback(null, JSON.stringify(sessionResponses.shift() || [{ platform: 'github-copilot', sessionId: 's2' }]), ''));
       if (command === 'live') return liveCallbacks.set(args[3], callback);
       if (command === 'load') return queueMicrotask(() => callback(null, JSON.stringify(cards.get(args[3])), ''));
