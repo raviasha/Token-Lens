@@ -14,7 +14,8 @@ function atomic(file, content) {
 }
 function json(file) { return JSON.parse(fs.readFileSync(file, 'utf8')); }
 function createCard(workspace, scope) {
-  readEvidence(workspace, scope, { limit: 1 });
+  const isPendingWorkspaceCard = scope?.workspaceCurrent === true && Array.isArray(scope.sessions) && scope.sessions.length === 0;
+  if (!isPendingWorkspaceCard) readEvidence(workspace, scope, { limit: 1 });
   const id = crypto.randomUUID(); const dir = cardDir(workspace, id);
   fs.mkdirSync(dir, { recursive: true });
   atomic(path.join(dir, 'scope.json'), JSON.stringify(scope, null, 2));
@@ -35,6 +36,7 @@ function loadCard(workspace, id) {
 function prepareGeneration(workspace, id, expectedRevision) {
   const card = loadCard(workspace, id);
   if (card.revision !== expectedRevision) throw new Error('revision conflict');
+  if (card.scope.workspaceCurrent && !card.scope.sessions.length) throw new Error('no captured task yet; waiting for the first captured task');
   const snapshot = readEvidence(workspace, card.scope, { limit: 1 }).coverage.snapshots;
   const sourceLimits = Object.fromEntries(snapshot.filter(x => x.snapshotHash).map(x => [x.source, { bytes: x.bytes, hash: x.snapshotHash }]));
   atomic(path.join(cardDir(workspace, id), 'generation.json'), JSON.stringify({ expectedRevision, scope: { ...card.scope, sourceLimits }, preparedAt: new Date().toISOString() }, null, 2));
@@ -127,10 +129,34 @@ function liveScope(workspace, sessionId, platform = 'codex') {
   if (!session) throw new Error('unknown live sessionId');
   return { sessions: [{ platform: normalizedPlatform, sessionId: normalizedSessionId, ...(session.taskName ? { taskName: session.taskName } : {}) }], liveSessionId: normalizedSessionId, livePlatform: normalizedPlatform };
 }
+function emptyEvidence(card) {
+  return { total: 0, warnings: [], changedSinceRevision: card.revision === 0 };
+}
+function pendingWorkspaceCard(workspace) {
+  const existing = listCards(workspace).find(item => item.scope.workspaceCurrent && !item.scope.sessions.length);
+  return existing ? loadCard(workspace, existing.id) : { ...createCard(workspace, { sessions: [], workspaceCurrent: true }), claims: [], corrections: [] };
+}
+function loadOrCreateWorkspaceCard(workspace) {
+  const latest = listSessions(workspace)[0];
+  if (latest) return loadOrCreateLiveCard(workspace, latest.sessionId, latest.platform);
+  const card = pendingWorkspaceCard(workspace);
+  return { card, evidence: emptyEvidence(card), history: listCards(workspace).filter(item => item.id !== card.id) };
+}
+function adoptWorkspaceCard(workspace, card, scope) {
+  atomic(path.join(cardDir(workspace, card.id), 'scope.json'), JSON.stringify(scope, null, 2));
+  return loadCard(workspace, card.id);
+}
 function loadOrCreateLiveCard(workspace, sessionId, platform = 'codex') {
-  const scope = liveScope(workspace, sessionId, platform);
+  let scope;
+  try { scope = liveScope(workspace, sessionId, platform); }
+  catch (error) {
+    if (!/unknown live sessionId/.test(String(error.message || error))) throw error;
+    const pending = loadOrCreateWorkspaceCard(workspace);
+    return { ...pending, liveSessionId: sessionId.trim(), livePlatform: platform.trim() };
+  }
   const existing = listCards(workspace).find(item => item.scope.liveSessionId === scope.liveSessionId && (item.scope.livePlatform || 'codex') === scope.livePlatform);
-  let card = existing ? loadCard(workspace, existing.id) : { ...createCard(workspace, scope), claims: [], corrections: [] };
+  const pending = !existing && listCards(workspace).find(item => item.scope.workspaceCurrent && !item.scope.sessions.length);
+  let card = existing ? loadCard(workspace, existing.id) : pending ? adoptWorkspaceCard(workspace, loadCard(workspace, pending.id), scope) : { ...createCard(workspace, scope), claims: [], corrections: [] };
   const taskName = scope.sessions[0].taskName;
   if (taskName && !card.scope.sessions.some(session => session.platform === scope.livePlatform && session.sessionId === scope.liveSessionId && session.taskName)) {
     const sessions = card.scope.sessions.map(session => session.platform === scope.livePlatform && session.sessionId === scope.liveSessionId ? { ...session, taskName } : session);
@@ -150,4 +176,4 @@ function loadOrCreateLiveCard(workspace, sessionId, platform = 'codex') {
     history: listCards(workspace).filter(item => item.id !== card.id)
   };
 }
-module.exports = { createCard, saveRevision, loadCard, correctClaim, renderMarkdown, listCards, prepareGeneration, generationScope, loadOrCreateLiveCard };
+module.exports = { createCard, saveRevision, loadCard, correctClaim, renderMarkdown, listCards, prepareGeneration, generationScope, loadOrCreateLiveCard, loadOrCreateWorkspaceCard };

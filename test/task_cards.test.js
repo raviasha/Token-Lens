@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { listSessions, readEvidence } = require('../task-cards/evidence.cjs');
-const { createCard, saveRevision, loadCard, correctClaim, renderMarkdown, loadOrCreateLiveCard } = require('../task-cards/card.cjs');
+const { createCard, saveRevision, loadCard, correctClaim, renderMarkdown, loadOrCreateLiveCard, loadOrCreateWorkspaceCard, prepareGeneration } = require('../task-cards/card.cjs');
 const { spawnSync } = require('node:child_process');
 const { buildGenerationPrompt } = require('../task-cards/prompt.cjs');
 
@@ -140,10 +140,34 @@ test('reopening a legacy live card persists its prompt-derived task name', (t) =
   assert.equal(loadCard(dir, legacy.id).scope.sessions[0].taskName, 'Add readable names to Task Cards.');
 });
 
-test('live card rejects an uncaptured session without creating a card', (t) => {
+test('a workspace current card is available before capture and cannot be generated', (t) => {
   const dir = workspace(t);
-  assert.throws(() => loadOrCreateLiveCard(dir, 'never-captured'), /unknown live sessionId/);
-  assert.equal(fs.existsSync(path.join(dir, '.code-buddy', 'task-cards')), false);
+  const first = loadOrCreateWorkspaceCard(dir);
+  const reopened = loadOrCreateWorkspaceCard(dir);
+  assert.equal(first.card.id, reopened.card.id);
+  assert.deepEqual(first.card.scope, { sessions: [], workspaceCurrent: true });
+  assert.equal(first.evidence.total, 0);
+  assert.throws(() => prepareGeneration(dir, first.card.id, 0), /no captured task yet/i);
+});
+
+test('the first captured task adopts the workspace current card without changing its ID', (t) => {
+  const dir = workspace(t); const file = path.join(dir, '.code-buddy', 'codex-session.jsonl');
+  const pending = loadOrCreateWorkspaceCard(dir);
+  append(file, { schemaVersion: 2, sessionId: 'first-task', recordType: 'user.message', data: { role: 'user', content: [{ text: 'Make Task Cards work in every folder.' }] } });
+  const adopted = loadOrCreateLiveCard(dir, 'first-task');
+  assert.equal(adopted.card.id, pending.card.id);
+  assert.deepEqual(adopted.card.scope.sessions, [{ platform: 'codex', sessionId: 'first-task', taskName: 'Make Task Cards work in every folder.' }]);
+  assert.equal(adopted.card.scope.workspaceCurrent, undefined);
+  assert.equal(loadOrCreateWorkspaceCard(dir).card.id, pending.card.id);
+});
+
+test('an uncaptured live session reuses one workspace current card', (t) => {
+  const dir = workspace(t);
+  const first = loadOrCreateLiveCard(dir, 'never-captured');
+  const second = loadOrCreateLiveCard(dir, 'another-unseen-session');
+  assert.equal(first.card.id, second.card.id);
+  assert.deepEqual(first.card.scope.sessions, []);
+  assert.equal(first.card.scope.workspaceCurrent, true);
 });
 
 test('live cards keep matching session IDs separate across platforms', (t) => {
