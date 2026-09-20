@@ -107,6 +107,18 @@ test('live card rejects an uncaptured session without creating a card', (t) => {
   assert.equal(fs.existsSync(path.join(dir, '.code-buddy', 'task-cards')), false);
 });
 
+test('live cards keep matching session IDs separate across platforms', (t) => {
+  const dir = workspace(t);
+  append(path.join(dir, '.code-buddy', 'codex-session.jsonl'), { schemaVersion: 2, sessionId: 'shared', recordType: 'user.message', data: { role: 'user', content: [{ text: 'Codex task' }] } });
+  append(path.join(dir, '.code-buddy', 'copilot-session.jsonl'), { schemaVersion: 2, sessionId: 'shared', recordType: 'user.message', data: { role: 'user', content: [{ text: 'Copilot task' }] } });
+  const codex = loadOrCreateLiveCard(dir, 'shared');
+  const copilot = loadOrCreateLiveCard(dir, 'shared', 'github-copilot');
+  assert.notEqual(codex.card.id, copilot.card.id);
+  assert.equal(codex.livePlatform, 'codex');
+  assert.equal(copilot.livePlatform, 'github-copilot');
+  assert.deepEqual(copilot.card.scope.sessions, [{ platform: 'github-copilot', sessionId: 'shared' }]);
+});
+
 test('a claim may cite a selected source beyond the first 500 observations', (t) => {
   const dir = workspace(t); const file = path.join(dir, '.code-buddy', 'codex-session.jsonl');
   for (let n = 0; n < 510; n++) append(file, { schemaVersion: 2, sessionId: 'long', recordType: 'user.message', source: 'codex_rollout', sourceLine: n + 1, timestamp: new Date(Date.UTC(2026, 8, 19, 0, 0, n)).toISOString(), data: { role: 'user', content: [{ text: `Observation ${n}` }] } });

@@ -14,6 +14,8 @@ export function registerTaskCards(context: vscode.ExtensionContext, output: vsco
   let cardId: string | undefined;
   let renderedRevision = -1;
   let timer: NodeJS.Timeout | undefined;
+  let autoOpenAttempt = 0;
+  const autoOpenedSessions = new Set<string>();
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
   status.text = '$(note) Task Card';
   status.tooltip = 'Open or restore the local task card';
@@ -91,9 +93,8 @@ export function registerTaskCards(context: vscode.ExtensionContext, output: vsco
       }
     }
   }
-  context.subscriptions.push(vscode.commands.registerCommand('tokenLens.openTaskCard', async () => {
-    try {
-      if (panel) { panel.reveal(); return; }
+  async function openPanel(): Promise<void> {
+      if (panel) { await refresh(); panel.reveal(); return; }
       panel = vscode.window.createWebviewPanel('codeBuddy.taskCard', 'Task Card', vscode.ViewColumn.Beside, { enableScripts: true, retainContextWhenHidden: true });
       panel.onDidDispose(() => { panel = undefined; if (timer) clearInterval(timer); timer = undefined; });
       panel.webview.onDidReceiveMessage(async (message: { action: string; id?: string }) => {
@@ -114,6 +115,32 @@ export function registerTaskCards(context: vscode.ExtensionContext, output: vsco
         try { const card = await cli('load', cardId) as Card; if (card.revision !== renderedRevision) await refresh(); }
         catch (error) { output.appendLine(`Task Card refresh: ${String(error)}`); }
       }, 3000);
-    } catch (error) { await vscode.window.showErrorMessage(`Task Card could not open: ${String(error)}`); }
+  }
+  async function openLatestCopilotTaskCard(): Promise<void> {
+    const attempt = ++autoOpenAttempt;
+    try {
+      const sessions = await cli('sessions') as { platform: string; sessionId: string }[];
+      const latest = sessions.find(session => session.platform === 'github-copilot');
+      if (!latest || autoOpenedSessions.has(latest.sessionId)) return;
+      const live = await cli('live', latest.sessionId, latest.platform) as { card: Card };
+      if (attempt !== autoOpenAttempt) return;
+      cardId = live.card.id;
+      await openPanel();
+      autoOpenedSessions.add(latest.sessionId);
+    } catch (error) {
+      output.appendLine(`Task Card auto-open: ${String(error)}`);
+    }
+  }
+  context.subscriptions.push(vscode.commands.registerCommand('tokenLens.openTaskCard', async () => {
+    try { await openPanel(); }
+    catch (error) { await vscode.window.showErrorMessage(`Task Card could not open: ${String(error)}`); }
   }));
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (workspaceFolder) {
+    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(workspaceFolder, '.code-buddy/copilot-session.jsonl'));
+    watcher.onDidChange(() => { void openLatestCopilotTaskCard(); });
+    watcher.onDidCreate(() => { void openLatestCopilotTaskCard(); });
+    context.subscriptions.push(watcher);
+    void openLatestCopilotTaskCard();
+  }
 }
