@@ -18,6 +18,17 @@ function safeText(value) {
   if (Array.isArray(value)) return value.filter(x => x && typeof x.text === 'string').map(x => x.text).join('\n') || null;
   return null;
 }
+function taskName(row) {
+  const data = row.data || {};
+  const kind = row.recordType || row.event_type || 'unknown';
+  const role = data.role || (kind === 'user.prompt' || kind === 'user.message' || row.sourceEventType === 'user.message' ? 'user' : null);
+  if (role !== 'user') return null;
+  const text = kind === 'user.prompt' ? safeText(data.prompt) : safeText(data.content) || safeText(data.prompt);
+  const normalized = text?.replace(/<(?:recommended_plugins|environment_context|app-context|skills_instructions|permissions_instructions|apps_instructions|plugins_instructions)>[\s\S]*?<\/(?:recommended_plugins|environment_context|app-context|skills_instructions|permissions_instructions|apps_instructions|plugins_instructions)>/gi, ' ').replace(/\s+/g, ' ').trim();
+  if (!normalized || /^(?:yes|no|ok|okay|continue|approved|go ahead|do it|thanks|thank you)[.!]*$/i.test(normalized)) return null;
+  if (/^# overview generate \d+ to \d+ hyperpersonalized suggestions\b/i.test(normalized)) return null;
+  return normalized.length > 96 ? `${normalized.slice(0, 93).trimEnd()}…` : normalized;
+}
 function readRows(file, warnings, bound) {
   if (!fs.existsSync(file)) { warnings.push(`unavailable source: ${path.basename(file)}`); return { rows: [], size: 0, hash: null }; }
   const size = fs.statSync(file).size;
@@ -83,11 +94,18 @@ function listSessions(workspace) {
       const platform = source.platform || row.platform; const sessionId = row.sessionId || row.session_id;
       if (!platform || !sessionId) continue;
       const key = `${platform}\0${sessionId}`;
-      const before = sessions.get(key);
-      if (!before || (row.timestamp || '') > (before.timestamp || '')) sessions.set(key, { platform, sessionId, timestamp: row.timestamp || null });
+      const before = sessions.get(key) || { platform, sessionId, timestamp: null, taskName: null, taskNameTimestamp: null };
+      const timestamp = row.timestamp || null;
+      if (timestamp && timestamp > (before.timestamp || '')) before.timestamp = timestamp;
+      const derivedName = taskName(row);
+      if (derivedName && (!before.taskName || (timestamp && before.taskNameTimestamp && timestamp < before.taskNameTimestamp))) {
+        before.taskName = derivedName;
+        before.taskNameTimestamp = timestamp;
+      }
+      sessions.set(key, before);
     }
   }
-  return [...sessions.values()].sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+  return [...sessions.values()].map(({ taskNameTimestamp, ...session }) => session).sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
 }
 function readEvidence(workspace, scope, options = {}) {
   if (!scope || !Array.isArray(scope.sessions) || !scope.sessions.length) throw new Error('scope.sessions is required');

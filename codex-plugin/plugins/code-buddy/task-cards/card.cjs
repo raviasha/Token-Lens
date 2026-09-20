@@ -123,13 +123,20 @@ function liveScope(workspace, sessionId, platform = 'codex') {
   if (typeof platform !== 'string' || !platform.trim()) throw new Error('live platform is required');
   const normalizedSessionId = sessionId.trim();
   const normalizedPlatform = platform.trim();
-  if (!listSessions(workspace).some(session => session.platform === normalizedPlatform && session.sessionId === normalizedSessionId)) throw new Error('unknown live sessionId');
-  return { sessions: [{ platform: normalizedPlatform, sessionId: normalizedSessionId }], liveSessionId: normalizedSessionId, livePlatform: normalizedPlatform };
+  const session = listSessions(workspace).find(item => item.platform === normalizedPlatform && item.sessionId === normalizedSessionId);
+  if (!session) throw new Error('unknown live sessionId');
+  return { sessions: [{ platform: normalizedPlatform, sessionId: normalizedSessionId, ...(session.taskName ? { taskName: session.taskName } : {}) }], liveSessionId: normalizedSessionId, livePlatform: normalizedPlatform };
 }
 function loadOrCreateLiveCard(workspace, sessionId, platform = 'codex') {
   const scope = liveScope(workspace, sessionId, platform);
   const existing = listCards(workspace).find(item => item.scope.liveSessionId === scope.liveSessionId && (item.scope.livePlatform || 'codex') === scope.livePlatform);
-  const card = existing ? loadCard(workspace, existing.id) : { ...createCard(workspace, scope), claims: [], corrections: [] };
+  let card = existing ? loadCard(workspace, existing.id) : { ...createCard(workspace, scope), claims: [], corrections: [] };
+  const taskName = scope.sessions[0].taskName;
+  if (taskName && !card.scope.sessions.some(session => session.platform === scope.livePlatform && session.sessionId === scope.liveSessionId && session.taskName)) {
+    const sessions = card.scope.sessions.map(session => session.platform === scope.livePlatform && session.sessionId === scope.liveSessionId ? { ...session, taskName } : session);
+    atomic(path.join(cardDir(workspace, card.id), 'scope.json'), JSON.stringify({ ...card.scope, sessions }, null, 2));
+    card = loadCard(workspace, card.id);
+  }
   const evidence = selectedEvidence(workspace, card.scope);
   return {
     card,

@@ -43,6 +43,42 @@ test('VS Code Task Card opens on demand and restores after minimize without gene
   } finally { Module._load = load; }
 });
 
+test('VS Code scope picker leads with the prompt-derived task name and keeps the ID secondary', async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'card-scope-view-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const log = path.join(workspace, '.code-buddy', 'codex-session.jsonl');
+  fs.mkdirSync(path.dirname(log), { recursive: true });
+  fs.writeFileSync(log, JSON.stringify({ schemaVersion: 2, sessionId: 'opaque-session-id', recordType: 'user.message', data: { role: 'user', content: [{ text: 'Add readable names to the Task Card selector.' }] } }) + '\n');
+
+  const commands = new Map(); const panels = []; let quickPickItems;
+  const vscode = {
+    StatusBarAlignment: { Right: 1 }, ViewColumn: { Beside: 2 },
+    RelativePattern: class { constructor(base, pattern) { this.base = base; this.pattern = pattern; } },
+    workspace: { workspaceFolders: [{ uri: { fsPath: workspace } }], createFileSystemWatcher: () => ({ onDidChange() { return { dispose() {} }; }, onDidCreate() { return { dispose() {} }; }, dispose() {} }) },
+    window: {
+      createStatusBarItem: () => ({ show() {}, dispose() {} }),
+      createWebviewPanel: () => {
+        const panel = { webview: { html: '', onDidReceiveMessage(callback) { panel.receive = callback; } }, onDidDispose(callback) { panel.onDispose = callback; }, reveal() {}, dispose() { panel.onDispose(); } };
+        panels.push(panel); return panel;
+      },
+      showQuickPick: async items => { quickPickItems = items; return items[0]; },
+      showErrorMessage: async message => { throw new Error(message); },
+    },
+    commands: { registerCommand: (id, fn) => { commands.set(id, fn); return { dispose() {} }; } },
+  };
+  const load = Module._load; Module._load = function(request, parent, isMain) { return request === 'vscode' ? vscode : load.call(this, request, parent, isMain); };
+  try {
+    delete require.cache[require.resolve('../dist/taskCards.js')];
+    const { registerTaskCards } = require('../dist/taskCards.js');
+    registerTaskCards({ extensionPath: path.join(__dirname, '..'), subscriptions: [] }, { appendLine() {} });
+    await commands.get('tokenLens.openTaskCard')();
+    await panels[0].receive({ action: 'scope' });
+    assert.equal(quickPickItems[0].label, 'Add readable names to the Task Card selector.');
+    assert.match(quickPickItems[0].description, /codex · opaque-session-id/);
+    assert.match(panels[0].webview.html, /Add readable names to the Task Card selector\. · codex: opaque-session-id/);
+  } finally { panels.forEach(panel => panel.dispose()); Module._load = load; }
+});
+
 test('VS Code opens the latest Copilot task card once per session and reopens it after restart', async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'card-auto-view-'));
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
@@ -86,6 +122,7 @@ test('VS Code opens the latest Copilot task card once per session and reopens it
     registerTaskCards(context, { appendLine(line) { output.push(line); } });
     await waitFor(() => panels.length === 1 && panels[0].webview.html);
     assert.equal(panels.length, 1, output.join('\n'));
+    assert.match(panels[0].webview.html, /Task copilot-s1/);
     assert.match(panels[0].webview.html, /github-copilot: copilot-s1/);
 
     await panels[0].receive({ action: 'minimize' });
