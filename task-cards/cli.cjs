@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 const { listSessions, readEvidence } = require('./evidence.cjs');
-const { createCard, saveRevision, loadCard, correctClaim, listCards, prepareGeneration, generationScope } = require('./card.cjs');
+const { createCard, saveRevision, loadCard, correctClaim, listCards, prepareGeneration, generationScope, loadOrCreateLiveCard } = require('./card.cjs');
 const { buildGenerationPrompt } = require('./prompt.cjs');
 
 function main(argv) {
@@ -12,6 +12,7 @@ function main(argv) {
   if (command === 'evidence') return readEvidence(workspace, JSON.parse(args[0]), { offset: Number(args[1] || 0), limit: Number(args[2] || 200) });
   if (command === 'evidence-card') return readEvidence(workspace, generationScope(workspace, args[0]), { offset: Number(args[1] || 0), limit: Number(args[2] || 200) });
   if (command === 'create') return createCard(workspace, JSON.parse(args[0]));
+  if (command === 'live') return loadOrCreateLiveCard(workspace, args[0], args[1]);
   if (command === 'load') return loadCard(workspace, args[0]);
   if (command === 'save') return saveRevision(workspace, args[0], JSON.parse(fs.readFileSync(args[2], 'utf8')), Number(args[1]));
   if (command === 'correct') return correctClaim(workspace, args[0], args[1], args[2]);

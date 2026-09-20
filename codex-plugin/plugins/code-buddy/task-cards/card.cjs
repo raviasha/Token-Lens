@@ -118,20 +118,23 @@ function listCards(workspace) {
     catch { return null; }
   }).filter(Boolean).sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 }
-function liveScope(workspace, sessionId) {
+function liveScope(workspace, sessionId, platform = 'codex') {
   if (typeof sessionId !== 'string' || !sessionId.trim()) throw new Error('live sessionId is required');
+  if (typeof platform !== 'string' || !platform.trim()) throw new Error('live platform is required');
   const normalizedSessionId = sessionId.trim();
-  if (!listSessions(workspace).some(session => session.platform === 'codex' && session.sessionId === normalizedSessionId)) throw new Error('unknown live sessionId');
-  return { sessions: [{ platform: 'codex', sessionId: normalizedSessionId }], liveSessionId: normalizedSessionId };
+  const normalizedPlatform = platform.trim();
+  if (!listSessions(workspace).some(session => session.platform === normalizedPlatform && session.sessionId === normalizedSessionId)) throw new Error('unknown live sessionId');
+  return { sessions: [{ platform: normalizedPlatform, sessionId: normalizedSessionId }], liveSessionId: normalizedSessionId, livePlatform: normalizedPlatform };
 }
-function loadOrCreateLiveCard(workspace, sessionId) {
-  const scope = liveScope(workspace, sessionId);
-  const existing = listCards(workspace).find(item => item.scope.liveSessionId === scope.liveSessionId);
+function loadOrCreateLiveCard(workspace, sessionId, platform = 'codex') {
+  const scope = liveScope(workspace, sessionId, platform);
+  const existing = listCards(workspace).find(item => item.scope.liveSessionId === scope.liveSessionId && (item.scope.livePlatform || 'codex') === scope.livePlatform);
   const card = existing ? loadCard(workspace, existing.id) : { ...createCard(workspace, scope), claims: [], corrections: [] };
   const evidence = selectedEvidence(workspace, card.scope);
   return {
     card,
     liveSessionId: scope.liveSessionId,
+    livePlatform: scope.livePlatform,
     evidence: {
       total: evidence.total,
       warnings: evidence.coverage.warnings,

@@ -9,13 +9,18 @@ minimizing, restoring and correcting a saved card do not invoke a model.
 
 ## Use
 
-In VS Code, click **Task Card** in the status bar or run **Code Buddy: Open Task
-Card**. Choose a captured session, then click **Generate card**. The extension
-prepares a bounded evidence snapshot and opens a request in Copilot Chat for the
-developer to review and send. The agent reads evidence pages and saves a cited
-revision through the local CLI. **Refresh** displays it; **Minimize** closes the
-panel and the status control restores it. Corrections are appended without
-rewriting source logs. The panel can open each cited JSONL row and export Markdown.
+In VS Code, Code Buddy automatically opens its own Task Card beside the editor
+for the latest captured GitHub Copilot session. That automatic action does not
+inspect, open, or submit Copilot Chat. **Minimize** closes the panel for that VS
+Code process and session; a new Copilot session opens its own card, and
+restarting VS Code opens the latest captured session again. The status-bar **Task Card** control and
+**Code Buddy: Open Task Card** command remain available to restore or manually
+select a card. Choose a captured session, then click **Generate card**. The
+extension prepares a bounded evidence snapshot and opens a request in Copilot
+Chat for the developer to review and send. The agent reads evidence pages and
+saves a cited revision through the local CLI. **Refresh** displays it;
+corrections are appended without rewriting source logs. The panel can open each
+cited JSONL row and export Markdown.
 
 In a Codex task that has loaded the new plugin, ask Code Buddy to open the Task
 Card. `task_card_open` supplies the MCP Apps UI resource and lets the developer
