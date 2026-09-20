@@ -52,7 +52,13 @@ def task_card_open(arguments: dict[str, Any]) -> dict[str, Any]:
     if not card_id:
         scope = arguments.get("scope")
         if not isinstance(scope, dict):
-            return {"workspace": str(workspace_path(arguments)), "cards": card_cli("cards", arguments), "sessions": card_cli("sessions", arguments), "card": None}
+            result = card_cli("workspace", arguments)
+            return {
+                "workspace": str(workspace_path(arguments)),
+                "cardId": result["card"]["id"],
+                "sessions": card_cli("sessions", arguments),
+                **result,
+            }
         created = card_cli("create", arguments, json.dumps(scope))
         card_id = created["id"]
     card = card_cli("load", arguments, card_id)

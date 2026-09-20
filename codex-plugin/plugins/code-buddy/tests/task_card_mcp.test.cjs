@@ -50,6 +50,25 @@ test('capture-only skill describes the live task card lifecycle', () => {
   assert.match(skill, /History/);
 });
 
+test('Codex opens one current workspace card before any task is captured', (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'card-empty-mcp-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const [opened, reopened] = run([
+    { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'task_card_open', arguments: { workspace } } },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'task_card_open', arguments: { workspace } } },
+  ]);
+  assert.equal(opened.result.structuredContent.card.scope.workspaceCurrent, true);
+  assert.deepEqual(opened.result.structuredContent.card.scope.sessions, []);
+  assert.equal(opened.result.structuredContent.cardId, reopened.result.structuredContent.cardId);
+  assert.equal(opened.result.structuredContent.evidence.total, 0);
+  const log = path.join(workspace, '.code-buddy', 'codex-session.jsonl');
+  fs.mkdirSync(path.dirname(log), { recursive: true });
+  fs.writeFileSync(log, JSON.stringify({ schemaVersion: 2, sessionId: 'first-capture', recordType: 'user.message', data: { role: 'user', content: [{ text: 'Adopt this workspace Task Card.' }] } }) + '\n');
+  const [adopted] = run([{ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'task_card_open', arguments: { workspace } } }]);
+  assert.equal(adopted.result.structuredContent.cardId, opened.result.structuredContent.cardId);
+  assert.deepEqual(adopted.result.structuredContent.card.scope.sessions, [{ platform: 'codex', sessionId: 'first-capture', taskName: 'Adopt this workspace Task Card.' }]);
+});
+
 test('capture-only Codex exposes on-demand task card tools and an interactive resource', (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'card-mcp-'));
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
@@ -80,6 +99,7 @@ test('capture-only Codex exposes on-demand task card tools and an interactive re
   assert.match(resource.result.contents[0].text, /History/);
   assert.match(resource.result.contents[0].text, /open\(\{liveSessionId:state\.liveSessionId\}\)/);
   assert.match(resource.result.contents[0].text, /const reopenArgs=state\.liveSessionId\?\{liveSessionId:state\.liveSessionId\}:\{cardId:state\.cardId\}/);
+  assert.match(resource.result.contents[0].text, /isPendingWorkspaceCard\(\)\?open\(\{\}\)/);
   assert.doesNotMatch(resource.result.contents[0].text, /localStorage|sessionStorage/);
 
   const [live, invalid] = run([

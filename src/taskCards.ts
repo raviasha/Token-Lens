@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 
 const execFileAsync = promisify(execFile);
 type Session = { platform: string; sessionId: string; timestamp?: string | null; taskName?: string | null };
-type Scope = { sessions: Session[] };
+type Scope = { sessions: Session[]; workspaceCurrent?: boolean };
 type Card = { id: string; revision: number; title?: string; status?: string; scope: Scope; claims?: { id: string; section: string; text: string; basis: string; evidenceIds: string[] }[]; nextAction?: { text: string; evidenceIds: string[] }; corrections?: unknown[] };
 const escapeHtml = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
@@ -34,14 +34,15 @@ export function registerTaskCards(context: vscode.ExtensionContext, output: vsco
     return JSON.parse(result.stdout);
   }
   function html(card: Card | null, error = ''): string {
+    const pending = Boolean(card?.scope.workspaceCurrent && !card.scope.sessions.length);
     const sections = card?.claims?.map(claim => `<section><h3>${escapeHtml(claim.section)}</h3><p>${escapeHtml(claim.text)}</p><small>${escapeHtml(claim.basis)} · ${claim.evidenceIds.map(id => `<button data-action="evidence" data-id="${escapeHtml(id)}">Evidence ${escapeHtml(id.slice(0, 8))}</button>`).join(' ')}</small><button data-action="correct" data-id="${escapeHtml(claim.id)}">Correct</button></section>`).join('') || '';
-    const scope = card?.scope.sessions.map(s => s.taskName ? `${s.taskName} · ${s.platform}: ${s.sessionId}` : `${s.platform}: ${s.sessionId}`).join(', ') || 'Choose a session';
+    const scope = pending ? 'Current workspace' : card?.scope.sessions.map(s => s.taskName ? `${s.taskName} · ${s.platform}: ${s.sessionId}` : `${s.platform}: ${s.sessionId}`).join(', ') || 'Choose a session';
     return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
       body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-editor-background);padding:16px;line-height:1.4}button{font:inherit;cursor:pointer;color:var(--vscode-button-foreground);background:var(--vscode-button-background);border:0;border-radius:4px;padding:6px 10px;margin:3px}button:focus-visible{outline:2px solid var(--vscode-focusBorder)}section{border-top:1px solid var(--vscode-panel-border);padding:10px 0}small{display:block;color:var(--vscode-descriptionForeground)}.toolbar{display:flex;flex-wrap:wrap;gap:4px}.error{color:var(--vscode-errorForeground)}
-    </style></head><body><div class="toolbar"><button data-action="scope">Change scope</button><button data-action="generate">${card?.revision ? 'Update card' : 'Generate card'}</button><button data-action="refresh">Refresh</button><button data-action="export">Export Markdown</button><button data-action="minimize">Minimize</button></div>
+    </style></head><body><div class="toolbar"><button data-action="scope">Change scope</button><button data-action="generate"${pending ? ' disabled' : ''}>${card?.revision ? 'Update card' : 'Generate card'}</button><button data-action="refresh">Refresh</button><button data-action="export">Export Markdown</button><button data-action="minimize">Minimize</button></div>
     ${error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : ''}<small>Scope: ${escapeHtml(scope)}</small>
-    <h1>${escapeHtml(card?.title || 'Task Card')}</h1><p>Status: ${escapeHtml(card?.status || 'Not generated')} · Revision ${card?.revision || 0}</p>
-    ${sections}${card?.nextAction ? `<section><h3>Next action</h3><p>${escapeHtml(card.nextAction.text)}</p></section>` : '<p>Select a session, then generate a card with Copilot.</p>'}
+    <h1>${escapeHtml(pending ? 'Current task' : card?.title || 'Task Card')}</h1><p>Status: ${escapeHtml(pending ? 'Waiting for first captured task' : card?.status || 'Not generated')} · Revision ${card?.revision || 0}</p>
+    ${sections}${card?.nextAction ? `<section><h3>Next action</h3><p>${escapeHtml(card.nextAction.text)}</p></section>` : pending ? '<p>Task Card is ready and will update when the first task is captured.</p>' : '<p>Select a session, then generate a card with Copilot.</p>'}
     <script>const api=acquireVsCodeApi();document.addEventListener('click',event=>{const button=event.target.closest('button[data-action]');if(button)api.postMessage({action:button.dataset.action,id:button.dataset.id});});</script>
     </body></html>`;
   }
@@ -51,6 +52,11 @@ export function registerTaskCards(context: vscode.ExtensionContext, output: vsco
     if (cardId) card = await cli('load', cardId);
     renderedRevision = card?.revision ?? 0;
     panel.webview.html = html(card, error);
+  }
+  async function ensureWorkspaceCard(): Promise<void> {
+    if (cardId) return;
+    const current = await cli('workspace') as { card: Card };
+    cardId = current.card.id;
   }
   async function chooseScope(): Promise<void> {
     const sessions = await cli('sessions') as Session[];
@@ -64,7 +70,8 @@ export function registerTaskCards(context: vscode.ExtensionContext, output: vsco
     if (action === 'minimize') { panel?.dispose(); return; }
     if (action === 'scope') { await chooseScope(); return; }
     if (action === 'refresh') { await refresh(); return; }
-    if (!cardId) { await chooseScope(); if (!cardId) return; }
+    if (!cardId) await ensureWorkspaceCard();
+    if (!cardId) throw new Error('Task Card could not be initialized.');
     if (action === 'generate') {
       const card = await cli('load', cardId) as Card;
       const prompt = await cli('prompt', cardId, String(card.revision)) as string;
@@ -102,14 +109,7 @@ export function registerTaskCards(context: vscode.ExtensionContext, output: vsco
         try { await handle(message.action, message.id); }
         catch (error) { output.appendLine(`Task Card: ${String(error)}`); await refresh(error instanceof Error ? error.message : String(error)); }
       });
-      if (!cardId) {
-        const cards = await cli('cards') as { id: string; title: string }[];
-        if (cards.length === 1) cardId = cards[0].id;
-        else if (cards.length > 1) {
-          const choice = await vscode.window.showQuickPick([{ label: 'New card', id: '' }, ...cards.map(c => ({ label: c.title, id: c.id }))], { placeHolder: 'Open a saved card or create a new one' });
-          cardId = choice?.id || undefined;
-        }
-      }
+      await ensureWorkspaceCard();
       await refresh();
       timer = setInterval(async () => {
         if (!panel || !cardId) return;
@@ -142,6 +142,9 @@ export function registerTaskCards(context: vscode.ExtensionContext, output: vsco
     watcher.onDidChange(() => { void openLatestCopilotTaskCard(); });
     watcher.onDidCreate(() => { void openLatestCopilotTaskCard(); });
     context.subscriptions.push(watcher);
-    void openLatestCopilotTaskCard();
+    void (async () => {
+      try { await openPanel(); await openLatestCopilotTaskCard(); }
+      catch (error) { output.appendLine(`Task Card auto-open: ${String(error)}`); }
+    })();
   }
 }
