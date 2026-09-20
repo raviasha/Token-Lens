@@ -50,6 +50,36 @@ test('reads Copilot dialogue and marks partial history without inventing provide
   assert.equal(page.items[1].usage, null);
 });
 
+test('lists each captured task by its first meaningful user prompt instead of its opaque session ID', (t) => {
+  const dir = workspace(t); const file = path.join(dir, '.code-buddy', 'codex-session.jsonl');
+  append(file, { schemaVersion: 2, sessionId: '01a0ba67-970d-73a0-b836-3b7a2db0b431', recordType: 'user.message', timestamp: '2026-09-20T01:00:00Z', data: { role: 'user', content: [{ text: 'yes' }] } });
+  append(file, { schemaVersion: 2, sessionId: '01a0ba67-970d-73a0-b836-3b7a2db0b431', recordType: 'user.message', timestamp: '2026-09-20T01:01:00Z', data: { role: 'user', content: [{ text: 'Build a live Task Card widget for the current coding session.' }] } });
+  const [session] = listSessions(dir);
+  assert.equal(session.taskName, 'Build a live Task Card widget for the current coding session.');
+  assert.equal(session.sessionId, '01a0ba67-970d-73a0-b836-3b7a2db0b431');
+});
+
+test('skips host-injected prompt wrappers when deriving a task name', (t) => {
+  const dir = workspace(t); const file = path.join(dir, '.code-buddy', 'codex-session.jsonl');
+  append(file, { schemaVersion: 2, sessionId: 'with-wrapper', recordType: 'user.message', timestamp: '2026-09-20T01:00:00Z', data: { role: 'user', content: [{ text: '<recommended_plugins>Plugin metadata</recommended_plugins>' }] } });
+  append(file, { schemaVersion: 2, sessionId: 'with-wrapper', recordType: 'user.message', timestamp: '2026-09-20T01:01:00Z', data: { role: 'user', content: [{ text: 'Package and publish the updated Task Card extension.' }] } });
+  assert.equal(listSessions(dir)[0].taskName, 'Package and publish the updated Task Card extension.');
+});
+
+test('skips the host task-suggestion prompt when deriving a task name', (t) => {
+  const dir = workspace(t); const file = path.join(dir, '.code-buddy', 'codex-session.jsonl');
+  append(file, { schemaVersion: 2, sessionId: 'suggestions', recordType: 'user.message', timestamp: '2026-09-20T01:00:00Z', data: { role: 'user', content: [{ text: '# Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex.' }] } });
+  append(file, { schemaVersion: 2, sessionId: 'suggestions', recordType: 'user.message', timestamp: '2026-09-20T01:01:00Z', data: { role: 'user', content: [{ text: 'Add readable names to the Task Card task selector.' }] } });
+  assert.equal(listSessions(dir)[0].taskName, 'Add readable names to the Task Card task selector.');
+});
+
+test('keeps the first captured task name when its prompt has no timestamp', (t) => {
+  const dir = workspace(t); const file = path.join(dir, '.code-buddy', 'codex-session.jsonl');
+  append(file, { schemaVersion: 2, sessionId: 'partial-time', recordType: 'user.message', data: { role: 'user', content: [{ text: 'Keep this first task name.' }] } });
+  append(file, { schemaVersion: 2, sessionId: 'partial-time', recordType: 'user.message', timestamp: '2026-09-20T01:01:00Z', data: { role: 'user', content: [{ text: 'Do not replace the first task name.' }] } });
+  assert.equal(listSessions(dir)[0].taskName, 'Keep this first task name.');
+});
+
 test('invalid revision and conflict leave last card intact; corrections survive update', (t) => {
   const dir = workspace(t); const file = path.join(dir, '.code-buddy', 'codex-session.jsonl');
   append(file, { schemaVersion: 2, sessionId: 'a', recordType: 'user.message', source: 'codex_rollout', sourceLine: 1, sourceEventId: 'm1', data: { role: 'user', content: [{ text: 'Build it' }] } });
@@ -101,6 +131,15 @@ test('live card freshness ignores other sessions and detects its own new evidenc
   assert.equal(loadOrCreateLiveCard(dir, 's1').evidence.changedSinceRevision, true);
 });
 
+test('reopening a legacy live card persists its prompt-derived task name', (t) => {
+  const dir = workspace(t); const file = path.join(dir, '.code-buddy', 'codex-session.jsonl');
+  append(file, { schemaVersion: 2, sessionId: 'legacy', recordType: 'user.message', data: { role: 'user', content: [{ text: 'Add readable names to Task Cards.' }] } });
+  const legacy = createCard(dir, { sessions: [{ platform: 'codex', sessionId: 'legacy' }], liveSessionId: 'legacy', livePlatform: 'codex' });
+  const reopened = loadOrCreateLiveCard(dir, 'legacy');
+  assert.equal(reopened.card.scope.sessions[0].taskName, 'Add readable names to Task Cards.');
+  assert.equal(loadCard(dir, legacy.id).scope.sessions[0].taskName, 'Add readable names to Task Cards.');
+});
+
 test('live card rejects an uncaptured session without creating a card', (t) => {
   const dir = workspace(t);
   assert.throws(() => loadOrCreateLiveCard(dir, 'never-captured'), /unknown live sessionId/);
@@ -116,7 +155,7 @@ test('live cards keep matching session IDs separate across platforms', (t) => {
   assert.notEqual(codex.card.id, copilot.card.id);
   assert.equal(codex.livePlatform, 'codex');
   assert.equal(copilot.livePlatform, 'github-copilot');
-  assert.deepEqual(copilot.card.scope.sessions, [{ platform: 'github-copilot', sessionId: 'shared' }]);
+  assert.deepEqual(copilot.card.scope.sessions, [{ platform: 'github-copilot', sessionId: 'shared', taskName: 'Copilot task' }]);
 });
 
 test('a claim may cite a selected source beyond the first 500 observations', (t) => {

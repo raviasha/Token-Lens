@@ -33,7 +33,7 @@ test('live card scope is session-specific and reuses its local card', (t) => {
 
   const live = runCardCli(workspace, 'live', 's1');
   assert.equal(live.liveSessionId, 's1');
-  assert.deepEqual(live.card.scope.sessions, [{ platform: 'codex', sessionId: 's1' }]);
+  assert.deepEqual(live.card.scope.sessions, [{ platform: 'codex', sessionId: 's1', taskName: 'Build it' }]);
   assert.equal(live.card.revision, 0);
   assert.equal(live.evidence.total, 2);
   assert.equal(live.evidence.changedSinceRevision, true);
